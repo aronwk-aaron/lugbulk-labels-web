@@ -1,0 +1,19 @@
+services:
+  web:
+    build: .
+    ports:
+      - "8080:8080"
+    volumes:
+      - lugbulk-data:/data
+    environment:
+      # OAuth client credentials — from the Google Cloud Console project's
+      # OAuth client (see README for setup). Never commit real values;
+      # put them in a local .env file (gitignored) instead.
+      - GOOGLE_OAUTH_CLIENT_ID=${GOOGLE_OAUTH_CLIENT_ID}
+      - GOOGLE_OAUTH_CLIENT_SECRET=${GOOGLE_OAUTH_CLIENT_SECRET}
+      - GOOGLE_OAUTH_REDIRECT_URI=${GOOGLE_OAUTH_REDIRECT_URI:-http://localhost:8080/auth/callback}
+      # 32-byte key (base64), used to encrypt refresh tokens at rest.
+      - TOKEN_ENCRYPTION_KEY=${TOKEN_ENCRYPTION_KEY}
+
+volumes:
+  lugbulk-data:
