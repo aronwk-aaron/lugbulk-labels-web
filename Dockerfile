@@ -22,6 +22,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 WORKDIR /app
 COPY --from=build /src/build/lugbulk_labels_web /app/lugbulk_labels_web
 COPY sql/schema.sql /app/sql/schema.sql
+COPY templates/ /app/templates/
 
 # Mounted volume: sqlite db + image_cache/ live here, survive redeploys.
 VOLUME ["/data"]

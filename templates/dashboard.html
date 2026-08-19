@@ -1,0 +1,220 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>lugbulk-labels-web</title>
+<style>
+  :root { color-scheme: light dark; }
+  body { font-family: system-ui, sans-serif; max-width: 640px; margin: 2rem auto; padding: 0 1rem; }
+  header { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 1.5rem; }
+  h1 { font-size: 1.25rem; margin: 0; }
+  #whoami { color: #666; font-size: 0.9rem; }
+  section { margin-bottom: 2rem; }
+  h2 { font-size: 1rem; margin-bottom: 0.5rem; }
+  .row { display: flex; gap: 0.5rem; margin-bottom: 0.75rem; }
+  input[type=text] { flex: 1; padding: 0.4rem 0.6rem; }
+  button { padding: 0.4rem 0.8rem; cursor: pointer; }
+  ul { list-style: none; padding: 0; margin: 0; }
+  li { display: flex; justify-content: space-between; align-items: center;
+       padding: 0.6rem 0; border-bottom: 1px solid #ddd; gap: 0.5rem; }
+  li .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+             max-width: 220px; display: inline-block; }
+  li .meta { color: #888; font-size: 0.8rem; }
+  li .actions { display: flex; gap: 0.4rem; flex-shrink: 0; align-items: center; }
+  .empty { color: #888; font-style: italic; }
+  .error { color: #b00020; }
+  form#logout { display: inline; }
+  select.format-select { padding: 0.3rem; }
+</style>
+</head>
+<body>
+<header>
+  <h1>lugbulk-labels-web</h1>
+  <span>
+    <span id="whoami">{{email}}</span>
+    <form id="logout" method="post" action="/auth/logout">
+      <button type="submit">Log out</button>
+    </form>
+  </span>
+</header>
+
+<section>
+  <h2>Your saved sheets</h2>
+  <ul id="saved-list"><li class="empty">Loading&hellip;</li></ul>
+</section>
+
+<section>
+  <h2>Find a sheet</h2>
+  <div class="row">
+    <input type="text" id="search-box" placeholder="Search your Google Sheets by name&hellip;">
+    <button id="search-btn" type="button">Search</button>
+  </div>
+  <ul id="search-results"></ul>
+</section>
+
+<script>
+function el(tag, props, children) {
+  const e = document.createElement(tag);
+  if (props) for (const [k, v] of Object.entries(props)) {
+    if (k === 'text') e.textContent = v;
+    else e.setAttribute(k, v);
+  }
+  if (children) for (const c of children) e.appendChild(c);
+  return e;
+}
+
+async function api(path, opts) {
+  const res = await fetch(path, Object.assign({ credentials: 'same-origin' }, opts || {}));
+  if (res.status === 401) {
+    window.location.href = '/auth/login';
+    throw new Error('not logged in');
+  }
+  return res;
+}
+
+// Triggers a browser download from a POST response — fetch() can't drive
+// navigation directly, so the response body is read as a blob and handed
+// to a throwaway <a download> click, then the object URL is revoked.
+async function downloadFrom(path, filenameFallback) {
+  const res = await api(path, { method: 'POST' });
+  if (!res.ok) {
+    const text = await res.text().catch(() => '');
+    throw new Error(text || ('request failed: ' + res.status));
+  }
+  const blob = await res.blob();
+  const disposition = res.headers.get('Content-Disposition') || '';
+  const match = disposition.match(/filename="([^"]+)"/);
+  const filename = match ? match[1] : filenameFallback;
+
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
+async function loadSavedSheets() {
+  const list = document.getElementById('saved-list');
+  list.textContent = '';
+  try {
+    const res = await api('/sheets');
+    const data = await res.json();
+    if (!data.sheets.length) {
+      list.appendChild(el('li', { class: 'empty', text: 'No sheets saved yet — search below to add one.' }));
+      return;
+    }
+    for (const sheet of data.sheets) {
+      const nameSpan = el('span', { class: 'name', text: sheet.display_name });
+
+      const statusSpan = el('span', { class: 'meta' });
+
+      const labelsBtn = el('button', { type: 'button', text: 'Labels PDF' });
+      labelsBtn.addEventListener('click', async () => {
+        labelsBtn.disabled = true;
+        statusSpan.textContent = 'Generating labels…';
+        try {
+          await downloadFrom('/sheets/' + encodeURIComponent(sheet.row_id) + '/labels', sheet.display_name + ' labels.pdf');
+          statusSpan.textContent = '';
+        } catch (e) {
+          statusSpan.textContent = 'Labels failed — try again.';
+        }
+        labelsBtn.disabled = false;
+      });
+
+      const formatSelect = el('select', { class: 'format-select' });
+      formatSelect.appendChild(el('option', { value: 'csv', text: 'CSV' }));
+      formatSelect.appendChild(el('option', { value: 'pdf', text: 'PDF' }));
+
+      const lotsBtn = el('button', { type: 'button', text: 'Lot Counts' });
+      lotsBtn.addEventListener('click', async () => {
+        lotsBtn.disabled = true;
+        statusSpan.textContent = 'Generating lot counts…';
+        const format = formatSelect.value;
+        try {
+          await downloadFrom(
+            '/sheets/' + encodeURIComponent(sheet.row_id) + '/lots?format=' + encodeURIComponent(format),
+            sheet.display_name + ' lot counts.' + format
+          );
+          statusSpan.textContent = '';
+        } catch (e) {
+          statusSpan.textContent = 'Lot counts failed — try again.';
+        }
+        lotsBtn.disabled = false;
+      });
+
+      const delBtn = el('button', { type: 'button', text: 'Remove' });
+      delBtn.addEventListener('click', async () => {
+        delBtn.disabled = true;
+        try {
+          await api('/sheets/' + encodeURIComponent(sheet.row_id), { method: 'DELETE' });
+          loadSavedSheets();
+        } catch (e) {
+          delBtn.disabled = false;
+        }
+      });
+
+      const actions = el('span', { class: 'actions' }, [labelsBtn, formatSelect, lotsBtn, delBtn]);
+      list.appendChild(el('li', {}, [
+        el('span', {}, [nameSpan, document.createElement('br'), statusSpan]),
+        actions
+      ]));
+    }
+  } catch (e) {
+    list.appendChild(el('li', { class: 'error', text: 'Could not load saved sheets.' }));
+  }
+}
+
+async function runSearch() {
+  const q = document.getElementById('search-box').value.trim();
+  const results = document.getElementById('search-results');
+  results.textContent = '';
+  results.appendChild(el('li', { class: 'empty', text: 'Searching…' }));
+  try {
+    const res = await api('/sheets/search?q=' + encodeURIComponent(q));
+    const data = await res.json();
+    results.textContent = '';
+    if (!data.files.length) {
+      results.appendChild(el('li', { class: 'empty', text: 'No matching spreadsheets found.' }));
+      return;
+    }
+    for (const file of data.files) {
+      const nameSpan = el('span', { class: 'name', text: file.name });
+      const metaSpan = el('span', { class: 'meta', text: file.modifiedTime ? file.modifiedTime.slice(0, 10) : '' });
+      const addBtn = el('button', { type: 'button', text: 'Add' });
+      addBtn.addEventListener('click', async () => {
+        addBtn.disabled = true;
+        addBtn.textContent = 'Adding…';
+        try {
+          await api('/sheets', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ sheet_id: file.id, display_name: file.name })
+          });
+          addBtn.textContent = 'Added';
+          loadSavedSheets();
+        } catch (e) {
+          addBtn.disabled = false;
+          addBtn.textContent = 'Add';
+        }
+      });
+      results.appendChild(el('li', {}, [el('span', {}, [nameSpan, document.createTextNode(' '), metaSpan]), addBtn]));
+    }
+  } catch (e) {
+    results.textContent = '';
+    results.appendChild(el('li', { class: 'error', text: 'Search failed — try again.' }));
+  }
+}
+
+document.getElementById('search-btn').addEventListener('click', runSearch);
+document.getElementById('search-box').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') { e.preventDefault(); runSearch(); }
+});
+
+loadSavedSheets();
+</script>
+</body>
+</html>

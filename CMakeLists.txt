@@ -33,6 +33,14 @@ endif()
 
 add_executable(lugbulk_labels_web
     src/main.cpp
+    src/config.cpp
+    src/crypto.cpp
+    src/db.cpp
+    src/oauth.cpp
+    src/sheet_pivot.cpp
+    src/reports.cpp
+    src/labels_pdf.cpp
+    src/pdf_text.cpp
 )
 
 target_include_directories(lugbulk_labels_web PRIVATE
