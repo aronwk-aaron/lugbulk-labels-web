@@ -78,25 +78,44 @@ bool write_atomically(const std::string& path, const std::vector<uint8_t>& data)
     return true;
 }
 
-// Downloads and caches a part thumbnail by element ID. Returns the local
-// cache path on success, or empty string on failure (missing product
-// photo, network issue, etc.) so rendering can skip gracefully — mirrors
-// render_labels.py's _cached_image_path.
-std::string cached_image_path(const std::string& element_id, const std::string& url,
-                              const std::string& cache_dir) {
-    // pivot_sheet only emits digit-only IDs, but this is the one place the
-    // ID becomes a filesystem path — never trust it implicitly.
-    if (!is_valid_element_id(element_id)) return "";
+}  // namespace
+
+std::optional<std::string> element_id_from_image_name(const std::string& name) {
+    constexpr std::string_view kExt = ".jpg";
+    if (name.size() <= kExt.size() ||
+        name.compare(name.size() - kExt.size(), kExt.size(), kExt) != 0) {
+        return std::nullopt;
+    }
+    std::string id = name.substr(0, name.size() - kExt.size());
+    if (!is_valid_element_id(id)) return std::nullopt;
+    return id;
+}
+
+CachedImage probe_image_cache(const std::string& element_id, const std::string& cache_dir,
+                              std::string* path_out) {
+    if (path_out) path_out->clear();
+    // pivot_sheet only emits digit-only IDs, but this is where the ID
+    // becomes a filesystem path — never trust it implicitly.
+    if (!is_valid_element_id(element_id)) return CachedImage::kMiss;
     std::string path = cache_dir + "/" + element_id + ".jpg";
-
-    if (file_exists_nonempty(path)) return path;
-
+    if (path_out) *path_out = path;
+    if (file_exists_nonempty(path)) return CachedImage::kHit;
     long mtime = 0;
     if (file_exists_empty(path, &mtime)) {
         long now = static_cast<long>(std::time(nullptr));
-        if (now - mtime < kMissRetrySeconds) {
-            return "";  // cached miss, not stale enough to retry yet
-        }
+        if (now - mtime < kMissRetrySeconds) return CachedImage::kMiss;  // not stale enough to retry yet
+    }
+    return CachedImage::kUnknown;
+}
+
+// Mirrors render_labels.py's _cached_image_path.
+std::string cached_image_path(const std::string& element_id, const std::string& url,
+                              const std::string& cache_dir) {
+    std::string path;
+    switch (probe_image_cache(element_id, cache_dir, &path)) {
+        case CachedImage::kHit: return path;
+        case CachedImage::kMiss: return "";
+        case CachedImage::kUnknown: break;
     }
 
     std::unique_ptr<CURL, decltype(&curl_easy_cleanup)> curl(curl_easy_init(), &curl_easy_cleanup);
@@ -128,6 +147,8 @@ std::string cached_image_path(const std::string& element_id, const std::string& 
     std::ofstream(path, std::ios::binary | std::ios::trunc);
     return "";
 }
+
+namespace {
 
 // Warms the image cache for all unique element IDs in parallel, so the
 // per-label lookups during rendering are just cache hits.

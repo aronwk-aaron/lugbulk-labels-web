@@ -25,11 +25,19 @@
 //   POST   /sheets/:id/preview  the first page of the sheet's own labels (?spec=&order=&hide=)
 //   GET    /test-page           printer alignment page for a stock (?spec=)
 //
+// For the browser-side renderer (report generation is moving client-side):
+//   GET    /img/:element_id.jpg a LEGO element photo, via the shared image cache
+//   POST   /bricklink/lookup    part/color/weight for element ids: {"ids":[...]}
+//   GET    /sheets/:id/values   the "Order Here" tab's raw cell rows (JSON, no pivot)
+//   GET    /label-specs.json    the label stock inventory
+//
 // See sql/schema.sql for the users/sheets/runs/sessions tables.
 
 #include "crow.h"
 #include "crow/json.h"
 #include "crow/mustache.h"
+
+#include <sys/stat.h>
 
 #include <algorithm>
 #include <atomic>
@@ -38,10 +46,13 @@
 #include <thread>
 #include <cctype>
 #include <ctime>
+#include <fstream>
 #include <functional>
 #include <future>
 #include <iostream>
+#include <iterator>
 #include <map>
+#include <memory>
 #include <mutex>
 #include <set>
 #include <optional>
@@ -117,6 +128,19 @@ struct Guards {
     limits::RateLimiter jobs_per_user{6, 1.0 / 120};
     // Live design preview and alignment test page, per user: 20, then 1/second.
     limits::RateLimiter preview_per_user{20, 1};
+    // Part photos (/img/), per visitor, instead of per_ip above: rendering
+    // a sheet in the browser asks for one photo per distinct part at once
+    // (a big order sheet has a few hundred), so a burst of 300 lets a whole
+    // sheet load in one go; 20/second after that still covers paging
+    // through other sheets while capping a scraper. Cache hits are a file
+    // read; misses are also bounded by kMaxImageFetches below.
+    limits::RateLimiter images_per_visitor{300, 20};
+    // Photo downloads from LEGO's CDN in flight at once, across all /img/
+    // requests. Each holds a worker thread for up to curl's 10 s timeout, so
+    // this keeps a cold cache from tying up every worker; over it, the
+    // request is refused with 503 + Retry-After and the browser retries.
+    static constexpr int kMaxImageFetches = 8;
+    std::atomic<int> image_fetches{0};
     limits::JobGate jobs;
     limits::Allowlist allowlist;
     bool trust_proxy;
@@ -249,7 +273,10 @@ struct SecurityMiddleware {
     bool https = false;  // served over https (per the OAuth redirect URI)
 
     void before_handle(crow::request& req, crow::response& res, context&) {
-        if (g_guards && req.url != "/healthz") {
+        // Part photos have their own, larger limit (Guards::images_per_visitor,
+        // applied in the /img/ route); counting them here too would cap a
+        // sheet's photo burst at per_ip's 120.
+        if (g_guards && req.url != "/healthz" && req.url.rfind("/img/", 0) != 0) {
             std::string ip = client_ip(req);
             auto retry = g_guards->per_ip.take(ip);
             if (!retry && req.url.rfind("/auth/", 0) == 0) retry = g_guards->auth_per_ip.take(ip);
@@ -276,9 +303,15 @@ struct SecurityMiddleware {
         // with names on them). Never let a browser, proxy or CDN cache it —
         // otherwise a shared computer's Back button, or a caching proxy,
         // could show one organizer's data to someone else.
-        res.set_header("Cache-Control", "no-store, private");
-        res.set_header("Pragma", "no-cache");
-        res.set_header("Vary", "Cookie");
+        // The exceptions are the few routes that serve the same public bytes
+        // to everyone (LEGO part photos, the label stock list): they set a
+        // "public, ..." Cache-Control themselves, which is kept, and don't
+        // vary by cookie.
+        if (res.get_header_value("Cache-Control").rfind("public", 0) != 0) {
+            res.set_header("Cache-Control", "no-store, private");
+            res.set_header("Pragma", "no-cache");
+            res.set_header("Vary", "Cookie");
+        }
         res.set_header("Server", "lugbulk-labels-web");  // don't advertise the framework
         if (https) res.set_header("Strict-Transport-Security", "max-age=31536000");
         res.set_header("X-Content-Type-Options", "nosniff");
@@ -466,12 +499,10 @@ void check_run_size(const PivotResult& pivot) {
     }
 }
 
-// Fetches the "Order Here" tab for a sheet the user owns, pivots it, and
-// adds BrickLink data. Shared by every generate route. Throws std::runtime_error (from
-// mint_access_token / oauth calls) on any Google API failure — callers turn
-// that into a run-log "error" row + an error response (see google_error).
-PivotResult fetch_and_pivot(const Config& cfg, Db& db, int64_t user_id,
-                             const std::string& spreadsheet_id) {
+// The "Order Here" tab's cells, unpivoted (what fetch_and_pivot reads, and
+// what GET /sheets/:id/values hands the browser). Throws like fetch_and_pivot.
+std::vector<std::vector<std::string>> fetch_order_rows(const Config& cfg, Db& db, int64_t user_id,
+                                                       const std::string& spreadsheet_id) {
     std::string access_token = mint_access_token(cfg, db, user_id);
     // Column count has grown across sheet years (2023: 93 cols -> 2026: 98
     // cols, as the roster grows) — ZZ (702 columns) gives a wide margin
@@ -480,9 +511,16 @@ PivotResult fetch_and_pivot(const Config& cfg, Db& db, int64_t user_id,
     // of millions shouldn't be able to exhaust the server's memory.
     std::string range = "'" + std::string(layout::kSourceTab) + "'!A1:ZZ" +
                         std::to_string(kMaxSheetRows);
-    std::vector<std::vector<std::string>> rows =
-        oauth::fetch_sheet_values(access_token, spreadsheet_id, range);
-    PivotResult pivot = pivot_sheet(rows);
+    return oauth::fetch_sheet_values(access_token, spreadsheet_id, range);
+}
+
+// Fetches the "Order Here" tab for a sheet the user owns, pivots it, and
+// adds BrickLink data. Shared by every generate route. Throws std::runtime_error (from
+// mint_access_token / oauth calls) on any Google API failure — callers turn
+// that into a run-log "error" row + an error response (see google_error).
+PivotResult fetch_and_pivot(const Config& cfg, Db& db, int64_t user_id,
+                             const std::string& spreadsheet_id) {
+    PivotResult pivot = pivot_sheet(fetch_order_rows(cfg, db, user_id, spreadsheet_id));
     check_run_size(pivot);
     apply_bricklink(pivot);
     return pivot;
@@ -737,6 +775,8 @@ int main() {
 
     // Clear out sessions that expired while the server was down.
     db->delete_expired_sessions();
+    // The shared part-photo cache (/img/ writes into it before any PDF has).
+    ::mkdir((cfg.data_dir + "/image_cache").c_str(), 0755);  // ignore EEXIST
 
     Guards guards(cfg);
     g_guards = &guards;
@@ -1094,6 +1134,41 @@ int main() {
         }
     });
 
+    // The sheet's "Order Here" cells as read from Google (same range and row
+    // cap as every report), not pivoted: {"rows":[["...", ...], ...]}. For
+    // the browser to pivot and render itself.
+    CROW_ROUTE(app, "/sheets/<int>/values")([&cfg, &db](const crow::request& req, int64_t row_id) {
+        auto user = current_user(*db, req);
+        if (!user) return crow::response(401, "not logged in");
+        auto owned = db->find_owned_sheet(user->id, row_id);
+        if (!owned) return crow::response(404, "sheet not found");
+        auto ticket = start_job(user->id);
+        if (!ticket.ticket) return std::move(ticket.refused);
+
+        try {
+            auto rows = fetch_order_rows(cfg, *db, user->id, owned->sheet_id);
+            std::string body = "{\"rows\":[";
+            for (size_t r = 0; r < rows.size(); ++r) {
+                if (r > 0) body += ",";
+                body += "[";
+                for (size_t c = 0; c < rows[r].size(); ++c) {
+                    if (c > 0) body += ",";
+                    body += "\"" + json_escape(rows[r][c]) + "\"";
+                }
+                body += "]";
+            }
+            body += "]}";
+            crow::response res(200, std::move(body));
+            res.set_header("Content-Type", "application/json");
+            res.set_header("Cache-Control", "no-store");
+            return res;
+        } catch (const std::exception& e) {
+            std::cerr << "values failed for sheet " << owned->sheet_row_id << ": " << e.what()
+                      << std::endl;
+            return google_error(e);
+        }
+    });
+
     CROW_ROUTE(app, "/sheets/<int>/history")([&db](const crow::request& req, int64_t row_id) {
         auto user = current_user(*db, req);
         if (!user) return crow::response(401, "not logged in");
@@ -1150,6 +1225,79 @@ int main() {
         if (!spec) return crow::response(400, "unknown label stock");
         return attachment("application/pdf", spec->id + " alignment test.pdf",
                           as_string(labels_pdf::build_test_page(*spec)));
+    });
+
+    // --- For the browser-side renderer --------------------------------------
+
+    // A LEGO element photo, "<element id>.jpg", from the same cache the PDF
+    // renderer uses (downloaded from LEGO's CDN on a miss). Only digit ids
+    // are accepted and the upstream URL is always layout::image_url_for's
+    // fixed host, so this can't be used to fetch anything else. The photos
+    // are public and the same for everyone, so browsers may cache them.
+    CROW_ROUTE(app, "/img/<string>")([&cfg, &db](const crow::request& req, const std::string& name) {
+        auto user = current_user(*db, req);
+        if (auto retry = g_guards->images_per_visitor.take(visitor_key(req, user))) {
+            return too_many(*retry, "Too many photo requests — slow down.");
+        }
+        auto id = labels_pdf::element_id_from_image_name(name);
+        if (!id) return crow::response(404, "not found");
+        const std::string cache_dir = cfg.data_dir + "/image_cache";
+        std::string path;
+        auto state = labels_pdf::probe_image_cache(*id, cache_dir, &path);
+        if (state == labels_pdf::CachedImage::kUnknown) {
+            struct FetchSlot {
+                ~FetchSlot() { g_guards->image_fetches.fetch_sub(1); }
+            };
+            if (g_guards->image_fetches.fetch_add(1) >= Guards::kMaxImageFetches) {
+                g_guards->image_fetches.fetch_sub(1);
+                crow::response res(503, "Busy fetching part photos — try again in a moment.");
+                res.set_header("Retry-After", "2");
+                return res;
+            }
+            FetchSlot slot;
+            path = labels_pdf::cached_image_path(*id, layout::image_url_for(*id), cache_dir);
+            state = path.empty() ? labels_pdf::CachedImage::kMiss : labels_pdf::CachedImage::kHit;
+        }
+        std::string body;
+        if (state == labels_pdf::CachedImage::kHit) {
+            std::ifstream in(path, std::ios::binary);
+            body.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+        }
+        if (body.empty()) return crow::response(404, "LEGO has no photo of this part.");
+        crow::response res(200, std::move(body));
+        res.set_header("Content-Type", "image/jpeg");
+        // Kept by SecurityMiddleware (it only forces no-store on non-public responses).
+        res.set_header("Cache-Control", "public, max-age=604800, immutable");
+        return res;
+    });
+
+    // BrickLink part number, color and weight for element ids, from the
+    // catalog files (bricklink.h): {"ids":["6225242", ...]} (at most 2000)
+    // -> {"6225242":{"part":"3004","color":"...","weight":1.22|null}, ...}.
+    // Unknown ids are left out. Open to anyone, like uploads.
+    CROW_ROUTE(app, "/bricklink/lookup").methods(crow::HTTPMethod::Post)(
+        [&db](const crow::request& req) {
+            auto user = current_user(*db, req);
+            if (auto retry = g_guards->preview_per_user.take(visitor_key(req, user))) {
+                return too_many(*retry, "Too many lookups — wait a moment.");
+            }
+            std::string error;
+            auto ids = bricklink::parse_lookup_request(req.body, &error);
+            if (!ids) return crow::response(400, error);
+            std::shared_ptr<const bricklink::Catalog> catalog = g_catalog->get();
+            crow::response res(200, bricklink::lookup_json(*catalog, *ids));
+            res.set_header("Content-Type", "application/json");
+            return res;
+        });
+
+    // The label stock inventory (data/label_specs.json as loaded), for the
+    // browser to lay labels out with. The same for everyone.
+    const std::string label_specs_json = layout::label_specs_json();
+    CROW_ROUTE(app, "/label-specs.json")([&label_specs_json]() {
+        crow::response res(200, label_specs_json);
+        res.set_header("Content-Type", "application/json");
+        res.set_header("Cache-Control", "public, max-age=3600");
+        return res;
     });
 
     // Live preview of a saved sheet's own labels: the first page, in the

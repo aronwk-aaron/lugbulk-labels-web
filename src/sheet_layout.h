@@ -82,4 +82,9 @@ const LabelSpec* find_label_spec(std::string_view name);
 
 const LabelSpec& default_label_spec();
 
+// The loaded inventory as JSON, for the browser-side renderer
+// (GET /label-specs.json): {"source", "default", "specs":[{every LabelSpec
+// field, plus "per_sheet" and "display_name"}]}, in display order.
+std::string label_specs_json();
+
 }  // namespace lugbulk::layout

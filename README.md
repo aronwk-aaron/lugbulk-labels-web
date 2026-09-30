@@ -179,9 +179,11 @@ place for TLS and connection limits; the app itself serves plain HTTP.
   sheet on your behalf that you can't read yourself.
 - Label designs are shared per Google Sheet by design; only people whose
   Google account can open the sheet can change one.
-- No response is cached anywhere (`Cache-Control: no-store, private`), so a
-  shared computer's Back button or a caching proxy can't show one
-  organizer's data to another. Logging out also clears the browser cache
+- No response with anyone's data is cached anywhere (`Cache-Control:
+  no-store, private`), so a shared computer's Back button or a caching proxy
+  can't show one organizer's data to another. (Only public, identical-for-
+  everyone responses are cacheable: LEGO part photos under `/img/` and the
+  label stock list `/label-specs.json`.) Logging out also clears the browser cache
   for the site, and sign-ins last 14 days.
 - Nothing personal is logged: no emails, names, tokens or request URLs
   (Crow's access log is off); errors log only internal user/sheet ids.

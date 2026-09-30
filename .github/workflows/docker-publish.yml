@@ -138,6 +138,39 @@ jobs:
           check="$(curl -fsS -X POST --data-binary @tests/fixtures/sample_order.xlsx \
             -H 'Content-Type: application/octet-stream' http://localhost:8080/upload/check)"
           grep -q '"people":' <<< "$check"
+          # Browser-side renderer endpoints. BrickLink lookup: JSON (the CI
+          # image has no BrickLink data, so {} is fine); a bad body is a 400.
+          lookup="$(curl -fsS -X POST -H 'Content-Type: application/json' \
+            --data '{"ids":["6225242","4211388"]}' http://localhost:8080/bricklink/lookup)"
+          echo "lookup -> $lookup"
+          python3 -c 'import json,sys; assert isinstance(json.loads(sys.argv[1]), dict)' "$lookup"
+          code="$(curl -s -o /dev/null -w '%{http_code}' -X POST --data '{"ids":["../x"]}' \
+            http://localhost:8080/bricklink/lookup)"
+          test "$code" = 400
+          # Part photos: only <digits>.jpg; served from the cache (seeded
+          # here, so CI never needs lego.com) with a long public Cache-Control.
+          code="$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8080/img/abc.jpg)"
+          echo "/img/abc.jpg -> $code"
+          test "$code" = 404 || test "$code" = 400
+          docker exec smoke sh -c "printf '\377\330\377\340ci' > /data/image_cache/1234567.jpg && : > /data/image_cache/7654321.jpg"
+          curl -fsS -D img.headers -o img.jpg http://localhost:8080/img/1234567.jpg
+          cat img.headers
+          grep -qi '^content-type: image/jpeg' img.headers
+          grep -qi '^cache-control: public, max-age=604800, immutable' img.headers
+          test "$(head -c 3 img.jpg | od -An -tx1 | tr -d ' \n')" = ffd8ff
+          # A cached miss (LEGO has no photo) is a 404.
+          code="$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8080/img/7654321.jpg)"
+          test "$code" = 404
+          # Label stock list: public JSON, cacheable for an hour.
+          curl -fsS -D specs.headers -o specs.json http://localhost:8080/label-specs.json
+          grep -qi '^cache-control: public, max-age=3600' specs.headers
+          python3 -c 'import json; d=json.load(open("specs.json")); assert d["default"]=="avery5162" and len(d["specs"])>40 and all("label_width_mm" in s for s in d["specs"])'
+          # Everything else stays uncacheable.
+          curl -fsS -D version.headers -o /dev/null http://localhost:8080/version
+          grep -qi '^cache-control: no-store, private' version.headers
+          # Raw sheet values need sign-in.
+          code="$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8080/sheets/1/values)"
+          test "$code" = 401
           # Uploads over 10 MB are dropped too.
           # (Expect: off, or curl reports the server's "100 Continue" as the status)
           code="$(head -c 11000000 /dev/zero | curl -s -o /dev/null -w '%{http_code}' -H 'Expect:' \
