@@ -189,7 +189,8 @@ test('checklist PDF: a page per person, or continuous', async () => {
   assert.deepEqual(pages.map((p) => p[0]), ['Otto Brandt', '=Evil Formula', 'Zoë "Zed" Nakamura', 'Wendy Quill']);
   assert.equal(pages[3][1], '3 lots, 20 pieces');
   assert.deepEqual(pages[3].slice(2, 7), ['Element', 'Description', 'LEGO / BrickLink color', 'Qty', 'Label']);
-  assert.deepEqual(pages[3].slice(7, 12), ['6225242', 'BRICK 1X2X5', 'Medium Stone Grey / Light Bluis...', '3', '2 of 2']); // cut to fit, as the server does
+  // Too long for its column: wraps onto a second line, as the server does.
+  assert.deepEqual(pages[3].slice(7, 13), ['6225242', 'BRICK 1X2X5', 'Medium Stone Grey / Light Bluish', 'Gray', '3', '2 of 2']);
 
   const cont = await pdfText(
     await reports.checklistPdf(recs, { checklist: { layout: 'continuous', packed_by: true, weight: true, checkbox: false, title: 'Brick Club', subtitle: 'Fall 2031' } }),
