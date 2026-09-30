@@ -316,7 +316,14 @@ struct SecurityMiddleware {
         if (https) res.set_header("Strict-Transport-Security", "max-age=31536000");
         res.set_header("X-Content-Type-Options", "nosniff");
         res.set_header("X-Frame-Options", "DENY");
-        res.set_header("Referrer-Policy", "same-origin");
+        // Cross-origin requests get no referrer — except from the signed-in
+        // dashboard with the Picker, which sets "strict-origin" itself: the
+        // Picker's API key is restricted to this site's referrer, and Google
+        // rejects it ("The API developer key is invalid") when none is sent.
+        // Only the origin goes out, never the path or query.
+        if (res.get_header_value("Referrer-Policy").empty()) {
+            res.set_header("Referrer-Policy", "same-origin");
+        }
         // The dashboard sets its own CSP with a per-response script nonce;
         // everything else gets this one, which allows no scripts at all.
         if (res.get_header_value("Content-Security-Policy").empty()) {
@@ -880,6 +887,7 @@ int main() {
         crow::response res(200, tmpl.render(ctx));
         res.set_header("Content-Type", "text/html; charset=utf-8");
         res.set_header("Content-Security-Policy", csp_for(nonce, user && cfg.picker_enabled()));
+        if (user && cfg.picker_enabled()) res.set_header("Referrer-Policy", "strict-origin");
         return res;
     });
 
