@@ -3,7 +3,7 @@ FROM debian:bookworm-slim AS build
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential cmake git ca-certificates \
-    libssl-dev libsqlite3-dev libcurl4-openssl-dev libpodofo-dev libasio-dev libjpeg-dev \
+    libssl-dev libsqlite3-dev libcurl4-openssl-dev libpodofo-dev libasio-dev libjpeg-dev zlib1g-dev \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /src

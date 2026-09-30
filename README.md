@@ -16,6 +16,22 @@ token storage, hashed session tokens), a Drive-backed sheet picker,
 generation of label PDFs, a parts list and lot counts from the live sheet,
 and a per-sheet "last run" history are implemented.
 
+## Two ways in
+
+- **Upload a spreadsheet** — no account needed. Upload the order sheet as
+  an Excel `.xlsx` (Google Sheets: File → Download → Microsoft Excel) or a
+  `.csv` of its "Order Here" tab, pick a label design, and download labels
+  and reports. The file is read in memory for that one request and never
+  stored. Up to 10 MB; an `.xlsx` may not unpack past 64 MB.
+- **Sign in with Google** (optional, when the OAuth client is configured)
+  — save your Google Sheets and read them live each time, with label
+  designs saved per sheet and shared with everyone who has that sheet.
+
+Without `GOOGLE_OAUTH_CLIENT_ID`/`_SECRET` the app runs upload-only (no
+`TOKEN_ENCRYPTION_KEY` needed then). Set `PUBLIC_URL` to the app's public
+address (e.g. `https://lugbulk.example.org`); it defaults to the origin of
+`GOOGLE_OAUTH_REDIRECT_URI` when Google is on.
+
 ## What it generates
 
 - **Labels** — one per (person, part), grouped by part: heaviest parts
@@ -127,6 +143,7 @@ any one person — or script — can make it do:
 | What | Limit |
 |---|---|
 | Who can sign in | `ALLOWED_EMAILS` (addresses and/or `@domain`s); verified Google email required. Removing someone locks them out immediately. **Set this** — unset lets any Google account in and logs a warning at startup. |
+| Uploads | Same report limits as sign-in, keyed by client IP; 10 MB per file |
 | Reports and Check sheet | 6 at once, then one per 2 minutes, per user; one running per user; `MAX_CONCURRENT_JOBS` (default 2) server-wide. Over the limit gets an immediate "try again" (HTTP 429), never a queue. |
 | Drive search | 10 at once, then one per 3 seconds, per user |
 | Any request | 120 at once, then 10/second, per client IP (sign-in routes: 10, then one per 6 seconds) |
@@ -288,6 +305,7 @@ or with the compose file: `LUGBULK_TAG=canary docker compose pull && docker comp
 | `src/image_backdrop.{h,cpp}` | Gray-tile treatment for trans/white part photos |
 | `src/bricklink.{h,cpp}` | Reads BrickLink's catalog download files: weights and colors |
 | `src/reports.{h,cpp}` | Lot counts and parts list, CSV + PDF |
+| `src/spreadsheet.{h,cpp}` | Reads uploaded `.xlsx` (bounded unzip + SpreadsheetML) and `.csv` |
 | `src/pdf_text.{h,cpp}` | UTF-8 → WinAnsi for PDF text |
 | `tests/tests.cpp` | Unit tests (`ctest`) |
 | `CMakeLists.txt` | Build config; fetches Crow, locates PoDoFo/SQLite3/CURL/OpenSSL/Asio |

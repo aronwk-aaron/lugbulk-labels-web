@@ -103,6 +103,16 @@
   .field.grow select { width: 100%; }
   .inline-field { display: flex; align-items: center; gap: 0.4rem; }
 
+  a.button { display: inline-block; text-decoration: none; color: var(--fg);
+             background: var(--button-bg); border: 1px solid var(--border-strong);
+             border-radius: 6px; padding: 0.35rem 0.8rem; }
+  a.button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-fg); }
+  label.button { cursor: pointer; background: var(--button-bg); border: 1px solid var(--border-strong);
+                 border-radius: 6px; padding: 0.35rem 0.8rem; }
+  label.button:hover { background: var(--button-hover); }
+  .upload-row { display: flex; align-items: center; gap: 0.75rem; flex-wrap: wrap; margin-bottom: 0.5rem; }
+  #upload-name { overflow-wrap: anywhere; }
+
   /* Label stock combobox. */
   .combo { position: relative; }
   .combo input { width: 100%; }
@@ -133,17 +143,38 @@
 <header>
   <h1>lugbulk-labels-web<span class="version" title="build version">{{version}}</span></h1>
   <div class="who">
-    <span id="whoami">{{email}}</span>
+    {{#signed_in}}<span id="whoami">{{email}}</span>{{/signed_in}}
     <button type="button" id="theme-btn" title="Color theme">Theme: Auto</button>
-    <form id="logout" method="post" action="/auth/logout">
+    {{#signed_in}}<form id="logout" method="post" action="/auth/logout">
       <button type="submit">Log out</button>
-    </form>
+    </form>{{/signed_in}}
+    {{^signed_in}}{{#google}}<a class="button primary" href="/auth/login">Sign in with Google</a>{{/google}}{{/signed_in}}
   </div>
 </header>
 
+{{#signed_in}}
 <section>
   <h2>Your saved sheets</h2>
-  <div class="options">
+  <p class="note">Read live from Google Sheets each time.</p>
+  <ul id="saved-list"><li class="empty">Loading&hellip;</li></ul>
+</section>
+{{/signed_in}}
+
+<section id="upload">
+  <h2>Upload a spreadsheet</h2>
+  <p class="note">Your order sheet as an Excel <b>.xlsx</b> (Google Sheets: File → Download →
+    Microsoft Excel) or a <b>.csv</b> of its “Order Here” tab. It's read once to make your files
+    and never stored.{{^signed_in}}{{#google}} Or sign in with Google to save sheets and read
+    them live.{{/google}}{{/signed_in}}</p>
+  <div class="upload-row">
+    <label class="button" for="upload-file">Choose file…</label>
+    <input type="file" id="upload-file" accept=".xlsx,.csv,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" hidden>
+    <span id="upload-name" class="muted">No file chosen</span>
+  </div>
+  <p id="upload-status" class="status muted"></p>
+  <div class="actions" id="upload-actions"></div>
+  <ul class="issues" id="upload-issues"></ul>
+  <div class="options" style="margin-top:0.75rem">
     <label class="inline-field">Parts list &amp; lot counts as
       <select id="report-format">
         <option value="pdf">PDF</option>
@@ -151,7 +182,6 @@
       </select>
     </label>
   </div>
-  <ul id="saved-list"><li class="empty">Loading&hellip;</li></ul>
 </section>
 
 <section id="design" hidden>
@@ -159,8 +189,8 @@
     <h2>Label design — <span id="design-sheet"></span></h2>
     <button type="button" id="design-close">Close</button>
   </div>
-  <p class="note">Saved with the sheet: everyone who has this sheet saved prints this design.
-    The preview uses sample parts. <span id="design-status"></span></p>
+  <p class="note"><span id="design-note"></span> The preview uses sample parts.
+    <span id="design-status"></span></p>
   <div class="options">
     <div class="field grow combo">
       <label for="stock-input" id="stock-label">Label stock</label>
@@ -188,6 +218,7 @@
     <a id="preview-open" href="#" target="_blank" rel="noopener">Open it in a new tab</a>.</p>
 </section>
 
+{{#signed_in}}
 <section>
   <h2>Find a sheet</h2>
   <div class="search-row">
@@ -196,6 +227,7 @@
   </div>
   <ul id="search-results"></ul>
 </section>
+{{/signed_in}}
 
 <script nonce="{{nonce}}">
 function el(tag, props, children) {
@@ -208,9 +240,12 @@ function el(tag, props, children) {
   return e;
 }
 
+const SIGNED_IN = {{#signed_in}}true{{/signed_in}}{{^signed_in}}false{{/signed_in}};
+const GOOGLE = {{#google}}true{{/google}}{{^google}}false{{/google}};
+
 async function api(path, opts) {
   const res = await fetch(path, Object.assign({ credentials: 'same-origin' }, opts || {}));
-  if (res.status === 401) {
+  if (res.status === 401 && GOOGLE) {
     window.location.href = '/auth/login';
     throw new Error('not logged in');
   }
@@ -384,7 +419,19 @@ for (const [id, text] of PARTS) {
   const box = el('input', { type: 'checkbox', id: 'part-' + id });
   switchesEl.appendChild(el('label', {}, [box, document.createTextNode(text)]));
 }
-let designSheet = null;  // the saved sheet whose design is open
+// What the design panel is editing: a saved sheet (design stored on the
+// server, shared with everyone who has the sheet) or uploads (stored in
+// this browser).
+let designSheet = null;      // the saved sheet whose design is open
+let designingUpload = false;
+const UPLOAD_DESIGN_KEY = 'lugbulk.uploadDesign';
+function uploadDesign() {
+  try {
+    const d = JSON.parse(localStorage.getItem(UPLOAD_DESIGN_KEY) || 'null');
+    if (d && d.spec) return d;
+  } catch (e) {}
+  return { spec: 'avery5162', order: 'heaviest', hide: 'qr' };
+}
 let previewUrl = null;
 const debounce = (fn, ms) => { let t; return () => { clearTimeout(t); t = setTimeout(fn, ms); }; };
 
@@ -410,8 +457,13 @@ const refreshPreview = debounce(async () => {
 }, 350);
 
 const saveDesign = debounce(async () => {
-  if (!designSheet) return;
   const status = document.getElementById('design-status');
+  if (designingUpload) {
+    try { localStorage.setItem(UPLOAD_DESIGN_KEY, JSON.stringify(currentDesign())); } catch (e) {}
+    status.textContent = 'Saved in this browser.';
+    return;
+  }
+  if (!designSheet) return;
   try {
     const res = await api('/sheets/' + encodeURIComponent(designSheet.row_id) + '/design', {
       method: 'PUT', headers: { 'Content-Type': 'application/json' },
@@ -435,11 +487,20 @@ for (const id of ['label-spec', 'part-order']) {
 switchesEl.addEventListener('change', designChanged);
 
 async function openDesign(sheet) {
-  const res = await api('/sheets/' + encodeURIComponent(sheet.row_id) + '/design');
-  if (!res.ok) return;
-  const d = await res.json();
+  let d;
+  if (sheet) {
+    const res = await api('/sheets/' + encodeURIComponent(sheet.row_id) + '/design');
+    if (!res.ok) return;
+    d = await res.json();
+  } else {
+    d = uploadDesign();
+  }
   designSheet = sheet;
-  document.getElementById('design-sheet').textContent = sheet.display_name;
+  designingUpload = !sheet;
+  document.getElementById('design-sheet').textContent = sheet ? sheet.display_name : 'uploads';
+  document.getElementById('design-note').textContent = sheet
+    ? 'Saved with the sheet: everyone who has this sheet saved prints this design.'
+    : 'Used for uploaded files, and remembered in this browser.';
   document.getElementById('label-spec').value = d.spec;
   stockCombo.sync();
   document.getElementById('part-order').value = d.order;
@@ -454,6 +515,7 @@ async function openDesign(sheet) {
 document.getElementById('design-close').addEventListener('click', () => {
   document.getElementById('design').hidden = true;
   designSheet = null;
+  designingUpload = false;
 });
 document.getElementById('test-page-btn').addEventListener('click', async () => {
   try {
@@ -468,8 +530,8 @@ document.getElementById('test-page-btn').addEventListener('click', async () => {
 // Triggers a browser download from a POST response — fetch() can't drive
 // navigation directly, so the response body is read as a blob and handed
 // to a throwaway <a download> click, then the object URL is revoked.
-async function downloadFrom(path, filenameFallback) {
-  const res = await api(path, { method: 'POST' });
+async function downloadFrom(path, filenameFallback, file) {
+  const res = await api(path, file ? uploadRequest(file) : { method: 'POST' });
   if (!res.ok) {
     // Server errors are short plain-text messages meant for the user.
     const text = await res.text().catch(() => '');
@@ -653,12 +715,77 @@ async function runSearch() {
   }
 }
 
-document.getElementById('search-btn').addEventListener('click', runSearch);
-document.getElementById('search-box').addEventListener('keydown', (e) => {
-  if (e.key === 'Enter') { e.preventDefault(); runSearch(); }
-});
+// Sheet search only exists for signed-in users.
+if (SIGNED_IN) {
+  document.getElementById('search-btn').addEventListener('click', runSearch);
+  document.getElementById('search-box').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); runSearch(); }
+  });
+}
 
-loadSavedSheets();
+if (SIGNED_IN) loadSavedSheets();
+
+// --- Uploads --------------------------------------------------------------
+function uploadRequest(file) {
+  // Header values must be plain ASCII; the server only uses it for names.
+  const name = file.name.replace(/[^\x20-\x7e]/g, '_');
+  return { method: 'POST', body: file, headers: { 'X-File-Name': name, 'Content-Type': 'application/octet-stream' } };
+}
+(() => {
+  const input = document.getElementById('upload-file');
+  const nameEl = document.getElementById('upload-name');
+  const status = document.getElementById('upload-status');
+  const issues = document.getElementById('upload-issues');
+  const actions = document.getElementById('upload-actions');
+  const designQuery = () => new URLSearchParams(uploadDesign()).toString();
+  const stem = () => input.files[0].name.replace(/\.[^.]*$/, '');
+  const buttons = [];
+  const setStatus = (text, error) => {
+    status.textContent = text;
+    status.classList.toggle('error', !!error);
+    status.classList.toggle('muted', !error);
+  };
+  const add = (label, run, primary) => {
+    const b = el('button', { type: 'button', text: label });
+    if (primary) b.classList.add('primary');
+    b.disabled = true;
+    b.addEventListener('click', async () => {
+      buttons.forEach(x => x.disabled = true);
+      try { await run(); } catch (e) { setStatus(e.message, true); }
+      buttons.forEach(x => x.disabled = !input.files.length);
+    });
+    buttons.push(b);
+    actions.appendChild(b);
+  };
+  const download = (label, busy, path, suffix) => add(label, async () => {
+    setStatus(busy);
+    await downloadFrom(path(), stem() + suffix(), input.files[0]);
+    setStatus('');
+  }, label === 'Labels');
+  download('Labels', 'Making labels… (can take a minute)', () => '/upload/labels?' + designQuery(), () => ' labels.pdf');
+  add('Design', async () => openDesign(null));
+  download('Checklist', 'Making packing checklist…', () => '/upload/checklist?' + designQuery(), () => ' packing checklist.pdf');
+  download('Parts list', 'Making parts list…',
+           () => '/upload/parts?format=' + opt('report-format') + '&' + designQuery(), () => ' parts.' + opt('report-format'));
+  download('Lot counts', 'Making lot counts…', () => '/upload/lots?format=' + opt('report-format'),
+           () => ' lot counts.' + opt('report-format'));
+  add('Check file', async () => {
+    setStatus('Checking…');
+    issues.textContent = '';
+    const res = await api('/upload/check', uploadRequest(input.files[0]));
+    if (!res.ok) throw new Error(await res.text());
+    const data = await res.json();
+    setStatus(data.labels + ' labels, ' + (data.issues.length ? data.issues.length + ' issue(s):' : 'no issues found.'));
+    for (const issue of data.issues) issues.appendChild(el('li', { text: 'Row ' + issue.row + ': ' + issue.detail }));
+  });
+  input.addEventListener('change', () => {
+    const f = input.files[0];
+    nameEl.textContent = f ? f.name : 'No file chosen';
+    issues.textContent = '';
+    setStatus(f && f.size > 10 * 1024 * 1024 ? 'That file is over 10 MB — too big to upload.' : '', f && f.size > 10 * 1024 * 1024);
+    buttons.forEach(b => b.disabled = !f || f.size > 10 * 1024 * 1024);
+  });
+})();
 </script>
 </body>
 </html>

@@ -110,11 +110,24 @@ jobs:
           # Reports the version it was built as.
           test "$(curl -fsS http://localhost:8080/version)" = "$VERSION"
           # An oversized request body is dropped, not buffered (Crow patch).
-          code="$(head -c 200000 /dev/zero | curl -s -o /dev/null -w '%{http_code}' \
+          code="$(head -c 200000 /dev/zero | curl -s -o /dev/null -w '%{http_code}' -H 'Expect:' \
             -X POST --data-binary @- http://localhost:8080/sheets || true)"
           test "$code" = 000
-          # Logged-out dashboard must redirect to Google login.
-          test "$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8080/)" = 302
+          # The dashboard is open to anyone (uploads); sign-in is offered.
+          # (captured first: grep -q exiting early would fail the pipe under pipefail)
+          page="$(curl -fsS http://localhost:8080/)"
+          grep -q 'Sign in with Google' <<< "$page"
+          # An uploaded workbook is read and checked (no sign-in needed).
+          check="$(curl -fsS -X POST --data-binary @tests/fixtures/sample_order.xlsx \
+            -H 'Content-Type: application/octet-stream' http://localhost:8080/upload/check)"
+          echo "$check"
+          grep -q '"labels":6' <<< "$check"
+          # Uploads over 10 MB are dropped too.
+          # (Expect: off, or curl reports the server's "100 Continue" as the status)
+          code="$(head -c 11000000 /dev/zero | curl -s -o /dev/null -w '%{http_code}' -H 'Expect:' \
+            -X POST --data-binary @- http://localhost:8080/upload/check || true)"
+          echo "oversized upload -> $code"
+          test "$code" = 000
           # Runs as the unprivileged user, not root.
           docker top smoke -o pid,user,args
           # (the host has no name for the container's uid 10001, so ps may show either)
