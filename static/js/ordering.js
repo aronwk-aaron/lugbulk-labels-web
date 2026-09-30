@@ -91,6 +91,13 @@ export function summarizeParts(records, order) {
   }
 
   if (order === 'sheet') return parts;
+  if (Array.isArray(order)) {
+    // An explicit part order: element ids (packing.js partOrderOf); parts it
+    // doesn't list keep sheet order after the rest.
+    const rank = new Map(order.map((id, i) => [id, i]));
+    return parts.sort((a, b) => (rank.has(a.element_id) ? rank.get(a.element_id) : Infinity) -
+      (rank.has(b.element_id) ? rank.get(b.element_id) : Infinity) || 0);
+  }
   const sign = order === 'heaviest' ? -1 : 1;
   // Stable: unknown-weight parts keep sheet order after the rest.
   return parts.sort((a, b) => {

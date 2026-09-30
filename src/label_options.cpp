@@ -62,4 +62,6 @@ std::optional<LabelPart> label_part_from_name(std::string_view name) {
     return std::nullopt;
 }
 
+bool keep_parts_valid(std::string_view value) { return value == "off" || value == "optimize"; }
+
 }  // namespace lugbulk::labels

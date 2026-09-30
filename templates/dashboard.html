@@ -137,6 +137,16 @@
   .field > * { color: var(--fg); }
   .field select { width: 100%; }
   .inline-field { display: flex; align-items: center; gap: 0.4rem; font-size: 0.9rem; }
+  /* "Keep each part on one sheet": the option and what it does to the sheets. */
+  .keep-summary { font-size: 0.85rem; color: var(--muted); margin: -0.2rem 0 0.9rem; }
+  .keep-summary table { border-collapse: collapse; width: 100%; margin: 0.2rem 0 0.35rem; }
+  .keep-summary th, .keep-summary td { text-align: right; padding: 0.2rem 0.4rem;
+                                       border-bottom: 1px solid var(--border); }
+  .keep-summary th:first-child, .keep-summary td:first-child { text-align: left; padding-left: 0; }
+  .keep-summary thead th { font-weight: 600; font-size: 0.75rem; }
+  .keep-summary td { color: var(--fg); }
+  .keep-summary .good { color: var(--accent); font-weight: 600; }
+  .keep-summary .warn { color: var(--warn); }
   .switches { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr));
               gap: 0.35rem 0.8rem; font-size: 0.9rem; }
   .switches label { display: flex; gap: 0.45rem; align-items: center; cursor: pointer; }
@@ -279,6 +289,15 @@
             <option value="sheet">Sheet order</option>
           </select>
         </label>
+        <div id="keep-field" hidden>
+          <label class="field">Keep each part on one sheet
+            <select id="keep-parts">
+              <option value="off">Off — labels run on continuously</option>
+              <option value="optimize">Optimize — no part split</option>
+            </select>
+          </label>
+          <div class="keep-summary" id="keep-summary" aria-live="polite"></div>
+        </div>
         <h4>Show on each label</h4>
         <div class="switches" id="switches"></div>
         <div class="actions" style="margin-top:0.9rem">
@@ -324,6 +343,7 @@ import { perSheet } from '/static/js/labels.js';
 import { labelSpecFinder } from '/static/js/layout.js';
 import { loadSheet } from '/static/js/load.js';
 import { orderRecords } from '/static/js/ordering.js';
+import * as packing from '/static/js/packing.js';
 import * as reportOptions from '/static/js/report_options.js';
 import * as reports from '/static/js/reports.js';
 import { zip } from '/static/js/zip.js';
@@ -525,16 +545,17 @@ function uploadDesign() {
     const d = JSON.parse(localStorage.getItem(UPLOAD_DESIGN_KEY) || 'null');
     if (d && d.spec) return d;
   } catch (e) {}
-  return { spec: 'avery5162', order: 'heaviest', hide: 'qr' };
+  return { spec: 'avery5162', order: 'heaviest', hide: 'qr', keep_parts: 'off' };
 }
 function currentDesign() {
   const hide = PARTS.filter(([id]) => !$('part-' + id).checked).map(([id]) => id);
-  return { spec: opt('label-spec'), order: opt('part-order'), hide: hide.join(',') };
+  return { spec: opt('label-spec'), order: opt('part-order'), hide: hide.join(','), keep_parts: opt('keep-parts') };
 }
 function showDesign(d) {
   $('label-spec').value = d.spec;
   stockCombo.sync();
   $('part-order').value = d.order;
+  $('keep-parts').value = packing.normalizeKeep(d.keep_parts);
   const hidden = new Set((d.hide || '').split(',').filter(Boolean));
   for (const [id] of PARTS) $('part-' + id).checked = !hidden.has(id);
 }
@@ -702,6 +723,7 @@ async function labelSpec(id) {
   if (!spec) throw new Error('Unknown label stock “' + id + '”.');
   return spec;
 }
+
 let labelWorker = null;
 let workerSeq = 0;
 const workerJobs = new Map();
@@ -718,7 +740,7 @@ function startWorker() {
     if (event.data.progress) return job.onProgress && job.onProgress(event.data.progress);
     workerJobs.delete(event.data.id);
     if (event.data.error) job.reject(new Error(event.data.error));
-    else job.resolve(event.data.pdf);
+    else job.resolve(event.data.result !== undefined ? event.data.result : event.data.pdf);
   };
   labelWorker.onerror = (event) => {
     // The worker couldn't start (or crashed): fail what's running, and run
@@ -741,12 +763,97 @@ async function runLabelJob(message, onProgress) {
     });
   }
   const labels = await import('/static/js/labels.js');
+  if (message.cmd === 'pack') {
+    return packing.packRecords(message.records, message.per, { timeBoxMs: message.timeBoxMs });
+  }
   if (message.cmd === 'test_page') return labels.buildTestPage(message.spec);
   return labels.buildLabelsPdf(message.records, message.spec, {
     show: labels.optionsFromHidden(message.hidden), images: message.images,
     maxPages: message.maxPages, onProgress,
   });
 }
+// --- Keep each part on one sheet ---
+// packing.js finds the fewest sheets with no part split (in the Worker: it
+// may take up to a second). The answer is kept with the sheet that was read,
+// per part order and sheet size, so the preview, the summary, the download
+// and the reports' "same as the labels" order all share one packing.
+const keepActive = (design, spec) => packing.normalizeKeep(design.keep_parts) === 'optimize' && perSheet(spec) > 1;
+async function packFor(loaded, design, spec, ordered) {
+  const per = perSheet(spec);
+  const cache = loaded.packCache || (loaded.packCache = new Map());
+  const key = design.order + '|' + per;
+  if (!cache.has(key)) {
+    const job = runLabelJob({ cmd: 'pack', records: ordered, per, timeBoxMs: 1000 });
+    cache.set(key, job);
+    job.catch(() => cache.delete(key));
+  }
+  const result = await cache.get(key);
+  const slots = packing.slotsOf(ordered, result.layout);
+  return { result, slots, order: packing.partOrderOf(slots) };
+}
+// What "same as the labels" means for the reports: the design's part order,
+// or the packed order when parts are kept on one sheet.
+async function currentLabelOrder(loaded) {
+  const design = currentDesign();
+  const spec = await labelSpec(design.spec);
+  if (!keepActive(design, spec)) return design.order;
+  return (await packFor(loaded, design, spec, orderRecords(loaded.records, design.order))).order;
+}
+// The option (only for stocks with more than one label per sheet) and its
+// summary: sheets, blank labels and split parts, off vs optimize.
+let keepSeq = 0;
+async function refreshKeep() {
+  const seq = ++keepSeq;
+  const design = currentDesign();
+  const box = $('keep-summary');
+  let spec;
+  try {
+    spec = await labelSpec(design.spec);
+  } catch (e) {
+    return;
+  }
+  if (seq !== keepSeq) return;
+  const per = perSheet(spec);
+  $('keep-field').hidden = per <= 1;
+  box.replaceChildren();
+  const loaded = ws && ws.loaded;
+  if (per <= 1 || !loaded || !loaded.records.length) return;
+  const ordered = orderRecords(loaded.records, design.order);
+  const off = packing.flowSummary(ordered, per);
+  const plural = (n, word) => n + ' ' + word + (n === 1 ? '' : 's');
+  const row = (name, s, cls) => el('tr', {}, [
+    el('td', { text: name }), el('td', { text: String(s.sheets) }), el('td', { text: String(s.blanks) }),
+    el('td', { text: String(s.splitParts), class: cls || '' }),
+  ]);
+  const table = (rows) => el('table', {}, [
+    el('thead', {}, [el('tr', {}, ['', 'Sheets', 'Blank labels', 'Parts split'].map((t) => el('th', { text: t, scope: 'col' })))]),
+    el('tbody', {}, rows),
+  ]);
+  if (packing.normalizeKeep(design.keep_parts) !== 'optimize') {
+    box.appendChild(table([row('Off', off, off.splitParts ? 'warn' : '')]));
+    if (off.splitParts) {
+      box.appendChild(el('div', { text: plural(off.splitParts, 'part') + ' run over onto another sheet. Choose Optimize to keep each part on one sheet.' }));
+    }
+    return;
+  }
+  box.appendChild(el('div', { text: 'Packing the sheets…' }));
+  try {
+    const { result, slots } = await packFor(loaded, design, spec, ordered);
+    if (seq !== keepSeq) return;
+    box.replaceChildren(table([
+      row('Off', off, off.splitParts ? 'warn' : ''),
+      row('Optimize', { sheets: result.sheets, blanks: result.blanks, splitParts: packing.splitParts(slots, per) }, 'good'),
+    ]));
+    box.appendChild(el('div', {
+      text: result.proven
+        ? 'The fewest sheets possible (proven optimal).'
+        : 'Best found in a second — not proven optimal' + (result.lowerBound < result.sheets ? ' (at least ' + result.lowerBound + ' sheets are needed)' : '') + '.',
+    }));
+  } catch (e) {
+    if (seq === keepSeq) box.replaceChildren(el('div', { text: 'Couldn’t pack the sheets: ' + ((e && e.message) || e), class: 'warn' }));
+  }
+}
+
 // The labels PDF for the sheet read (`loaded`) in the design on screen:
 // all of it, or the first page (three labels on roll stock) for the
 // preview. `say(text)` shows progress.
@@ -754,12 +861,18 @@ async function makeLabels(loaded, { preview = false, say = () => {} } = {}) {
   const design = currentDesign();
   const spec = await labelSpec(design.spec);
   const maxPages = preview ? (perSheet(spec) === 1 ? 3 : 1) : 0;
+  // One record per slot; with "keep each part on one sheet" some slots are
+  // empty (null).
   let records = orderRecords(loaded.records, design.order);
+  if (keepActive(design, spec)) {
+    say('Packing the sheets…');
+    records = (await packFor(loaded, design, spec, records)).slots;
+  }
   if (maxPages) records = records.slice(0, maxPages * perSheet(spec));
   const hidden = new Set(design.hide.split(',').filter(Boolean));
   let images = new Map();
   if (!hidden.has('photo')) {
-    const ids = [...new Set(records.map((r) => r.element_id))];
+    const ids = [...new Set(records.filter(Boolean).map((r) => r.element_id))];
     images = await fetchPhotos(ids, (done, total) => say('Fetching photos ' + done + '/' + total));
   }
   return runLabelJob({ cmd: 'labels', records, spec, hidden: design.hide, maxPages, images }, (p) => {
@@ -905,7 +1018,7 @@ async function renderReportPreview(kind) {
       if (current()) setText(status, 'Fetching part photos… ' + done + ' of ' + total);
     });
     if (!current()) return;
-    const bytes = await reports.reportPdf(kind, loaded.records, options, { labelOrder: opt('part-order'), images });
+    const bytes = await reports.reportPdf(kind, loaded.records, options, { labelOrder: await currentLabelOrder(loaded), images });
     if (!current()) return;
     showPdf(new Blob([bytes], { type: 'application/pdf' }));
     setText(status, '');
@@ -945,6 +1058,7 @@ const saveDesign = debounce(async () => {
   }
 }, 700);
 function designChanged() {
+  refreshKeep();
   saveStatus = $('design-status');
   setText(saveStatus, 'Saving…');
   refreshPreview();
@@ -964,7 +1078,7 @@ function optionsChanged(status, typing, preview = true) {
   if (preview) (typing ? refreshPreviewSlowly : refreshPreview)();
   saveDesign();
 }
-for (const id of ['label-spec', 'part-order']) $(id).addEventListener('change', designChanged);
+for (const id of ['label-spec', 'part-order', 'keep-parts']) $(id).addEventListener('change', designChanged);
 $('switches').addEventListener('change', designChanged);
 $('test-page-btn').addEventListener('click', async () => {
   try {
@@ -990,6 +1104,7 @@ async function runCheck() {
     const loaded = await loadSheet(ws.kind === 'sheet' ? { rowId: ws.sheet.row_id } : ws.file, { fetch: api });
     if (ws !== opened) return false;
     ws.loaded = loaded;
+    refreshKeep();
     const data = loaded.summary;
     const plural = (n, word) => n + ' ' + word + (n === 1 ? '' : 's');
     summary.textContent = plural(data.labels, 'label') + ' · ' + plural(data.people, 'person').replace('persons', 'people') +
@@ -1134,7 +1249,7 @@ async function freshSheet(opened, status) {
 // One report's file: {name, bytes|text, type}.
 async function reportFile(kind, format, loaded, opened, status) {
   const options = opened.options;
-  const labelOrder = opt('part-order');
+  const labelOrder = await currentLabelOrder(loaded);
   const name = stemOf(opened) + REPORT_FILES[kind] + '.' + format;
   if (format === 'csv') {
     return { name, data: reports.reportCsv(kind, loaded.records, options, labelOrder), type: 'text/csv;charset=utf-8' };

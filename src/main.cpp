@@ -14,7 +14,7 @@
 //   DELETE /sheets/:row_id      remove a saved sheet
 //   GET    /sheets/:id/history  recent download log entries for a sheet (JSON)
 //   GET    /sheets/:id/design   the sheet's saved label design and report options (JSON)
-//   PUT    /sheets/:id/design   save it: {"spec","order","hide","report_options"?:{...}}
+//   PUT    /sheets/:id/design   save it: {"spec","order","hide","keep_parts"?:"off"|"optimize","report_options"?:{...}}
 //   POST   /sheets/:id/runs     log a download made in the browser: {"report_type","item_count"}
 //
 // The server makes no PDFs, zips or previews: the dashboard builds every
@@ -1134,6 +1134,10 @@ int main() {
                                     : design->order == ordering::PartOrder::kLightest ? "lightest"
                                                                                       : "sheet");
         body["hide"] = design->options.hidden_csv();
+        body["keep_parts"] = std::string(saved && saved->keep_parts &&
+                                                 labels::keep_parts_valid(*saved->keep_parts)
+                                             ? *saved->keep_parts
+                                             : "off");
         // report_options goes back as stored: it was checked as a strict
         // JSON object on the way in (checked again here all the same).
         std::string options = "{}";
@@ -1182,6 +1186,16 @@ int main() {
             // Optional: the report options, a JSON object of at most 4 KB,
             // stored exactly as sent (the browser checks and clamps every
             // value when it reads them back). Left out, what's stored stays.
+            // Optional too: "keep_parts", "off" or "optimize". Left out, what's
+            // stored stays (a saved design from before the option is "off").
+            std::optional<std::string> keep_parts;
+            if (json.has("keep_parts")) {
+                if (!has_string(json, "keep_parts") ||
+                    !labels::keep_parts_valid(std::string(json["keep_parts"].s()))) {
+                    return crow::response(400, R"(keep_parts must be "off" or "optimize")");
+                }
+                keep_parts = std::string(json["keep_parts"].s());
+            }
             auto raw_options = json_check::member(req.body, "report_options");
             if (!raw_options) return crow::response(400, "the body must be one JSON object");
             std::optional<std::string> report_options;
@@ -1200,7 +1214,8 @@ int main() {
             auto opts = labels::LabelOptions::from_hidden(hide, &error);
             if (!opts) return crow::response(400, error);
             db->put_design(owned->sheet_id,
-                           Design{spec->id, order, opts->hidden_csv(), std::move(report_options)},
+                           Design{spec->id, order, opts->hidden_csv(), std::move(report_options),
+                                  std::move(keep_parts)},
                            user->id);
             return crow::response(200, "saved");
         });

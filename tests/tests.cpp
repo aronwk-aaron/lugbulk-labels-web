@@ -467,6 +467,33 @@ void test_design_storage() {
         CHECK(db.get_design("sheet1")->report_options == std::string("{}"));
         db.put_design("sheet2", Design{"avery5160", "heaviest", "qr"}, u.id);
         CHECK(db.get_design("sheet2")->report_options == std::string());
+
+        // "Keep each part on one sheet": off by default, stored when sent,
+        // kept when a save leaves it out, and never anything but off/optimize.
+        CHECK(d && d->keep_parts == std::optional<std::string>("off"));
+        CHECK(db.get_design("sheet2")->keep_parts == std::optional<std::string>("off"));
+        db.put_design("sheet2", Design{"avery5160", "heaviest", "qr", std::nullopt,
+                                       std::string("optimize")}, u.id);
+        CHECK(db.get_design("sheet2")->keep_parts == std::optional<std::string>("optimize"));
+        db.put_design("sheet2", Design{"dymo30857", "sheet", "name"}, u.id);
+        CHECK(db.get_design("sheet2")->keep_parts == std::optional<std::string>("optimize"));
+        CHECK(db.get_design("sheet2")->label_spec == "dymo30857");
+        db.put_design("sheet2", Design{"dymo30857", "sheet", "name", std::nullopt, std::string("off")},
+                      u.id);
+        CHECK(db.get_design("sheet2")->keep_parts == std::optional<std::string>("off"));
+        // A first save that says "optimize" also stores it.
+        db.put_design("sheet3", Design{"avery5160", "heaviest", "qr", std::nullopt,
+                                       std::string("optimize")}, u.id);
+        CHECK(db.get_design("sheet3")->keep_parts == std::optional<std::string>("optimize"));
+        bool rejected = false;
+        try {
+            db.put_design("sheet3", Design{"avery5160", "heaviest", "qr", std::nullopt,
+                                           std::string("sometimes")}, u.id);
+        } catch (const std::exception&) {
+            rejected = true;  // the column's CHECK, as a second line after keep_parts_valid
+        }
+        CHECK(rejected);
+        CHECK(db.get_design("sheet3")->keep_parts == std::optional<std::string>("optimize"));
     }
     std::remove((dir + "/t.sqlite3").c_str());
     rmdir(dir.c_str());
@@ -494,17 +521,33 @@ void test_design_migration() {
         Db db(path, LUGBULK_SCHEMA_PATH);
         auto d = db.get_design("old");
         CHECK(d && d->label_spec == "avery5162" && d->report_options == std::string());
+        CHECK(d && d->keep_parts == std::optional<std::string>("off"));  // added by the migration
         std::vector<uint8_t> token{1};
         User u = db.upsert_user("sub-2", "bo@example.com", &token);
         db.put_design("old", Design{"avery5162", "lightest", "qr", std::string(R"({"parts":{}})")}, u.id);
+        CHECK(db.get_design("old")->report_options == std::string(R"({"parts":{}})"));
+        db.put_design("old", Design{"avery5162", "lightest", "qr", std::nullopt, std::string("optimize")},
+                      u.id);
+        CHECK(db.get_design("old")->keep_parts == std::optional<std::string>("optimize"));
         CHECK(db.get_design("old")->report_options == std::string(R"({"parts":{}})"));
     }
     {
         Db again(path, LUGBULK_SCHEMA_PATH);  // migrating twice is a no-op
         CHECK(again.get_design("old")->report_options == std::string(R"({"parts":{}})"));
+        CHECK(again.get_design("old")->keep_parts == std::optional<std::string>("optimize"));
     }
     std::remove(path.c_str());
     rmdir(dir.c_str());
+}
+
+void test_keep_parts_validation() {
+    using labels::keep_parts_valid;
+    CHECK(keep_parts_valid("off"));
+    CHECK(keep_parts_valid("optimize"));
+    for (const char* bad : {"", "Off", "OPTIMIZE", "on", "true", "optimise", " off", "off ", "0",
+                            "optimize,off", "off\n"}) {
+        CHECK(!keep_parts_valid(bad));
+    }
 }
 
 void test_json_check() {
@@ -654,6 +697,7 @@ int main() {
         {"label_options_and_extras", test_label_options_and_extras},
         {"design_storage", test_design_storage},
         {"design_migration", test_design_migration},
+        {"keep_parts_validation", test_keep_parts_validation},
         {"json_check", test_json_check},
         {"check_text", test_check_text},
     };

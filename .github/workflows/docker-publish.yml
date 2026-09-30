@@ -223,7 +223,7 @@ jobs:
           # The reports, their options, the zip writer and the font widths the
           # dashboard uses, and the vendored pdf-lib they import (served
           # unmodified).
-          for f in reports.js report_options.js printf.js zip.js afm.js vendor/pdf-lib.js; do
+          for f in reports.js report_options.js printf.js zip.js afm.js packing.js vendor/pdf-lib.js; do
             curl -fsS -D mod.headers -o mod.js "http://localhost:8080/static/js/$f"
             echo "/static/js/$f -> $(wc -c < mod.js) bytes"
             grep -qi '^content-type: text/javascript' mod.headers
@@ -234,6 +234,14 @@ jobs:
           grep -qF "from './vendor/pdf-lib.js'" reports.js
           curl -fsS -o zip.js http://localhost:8080/static/js/zip.js
           grep -q 'export function zip' zip.js
+          # "Keep each part on one sheet": the packer, run by the labels worker
+          # and the dashboard.
+          curl -fsS -o packing.js http://localhost:8080/static/js/packing.js
+          grep -q 'export function packRecords' packing.js
+          curl -fsS -o labels_worker.js http://localhost:8080/static/js/labels_worker.js
+          grep -qF "from './packing.js'" labels_worker.js
+          grep -qF "import * as packing from '/static/js/packing.js';" <<< "$page"
+          grep -q 'id="keep-parts"' <<< "$page"
           curl -fsS -o afm.js http://localhost:8080/static/js/afm.js
           grep -q 'export function helveticaMeasure' afm.js
           grep -qF "from './afm.js'" reports.js

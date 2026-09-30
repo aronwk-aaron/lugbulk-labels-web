@@ -172,6 +172,24 @@ void Db::migrate() {
             }
         }
     }
+    // sheet_designs.keep_parts (added with "Keep each part on one sheet").
+    {
+        bool has_keep = false;
+        Stmt s(db_, "SELECT name FROM pragma_table_info('sheet_designs');");
+        while (s.step()) has_keep |= s.column_text(0) == "keep_parts";
+        if (!has_keep) {
+            char* errmsg = nullptr;
+            if (sqlite3_exec(db_,
+                             "ALTER TABLE sheet_designs ADD COLUMN keep_parts TEXT NOT NULL "
+                             "DEFAULT 'off' CHECK (keep_parts IN ('off', 'optimize'));",
+                             nullptr, nullptr, &errmsg) != SQLITE_OK) {
+                std::string msg = std::string("db error: sheet_designs migration failed: ") +
+                                  (errmsg ? errmsg : "unknown");
+                sqlite3_free(errmsg);
+                throw std::runtime_error(msg);
+            }
+        }
+    }
     std::string runs_sql;
     {
         Stmt s(db_, "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'runs';");
@@ -409,11 +427,12 @@ void Db::mark_sheet_verified(int64_t sheet_row_id) {
 
 std::optional<Design> Db::get_design(const std::string& google_sheet_id) {
     Stmt s(db_,
-           "SELECT label_spec, part_order, hidden_parts, COALESCE(report_options, '') "
+           "SELECT label_spec, part_order, hidden_parts, COALESCE(report_options, ''), keep_parts "
            "FROM sheet_designs WHERE google_sheet_id = ?;");
     s.bind_text(1, google_sheet_id);
     if (!s.step()) return std::nullopt;
-    return Design{s.column_text(0), s.column_text(1), s.column_text(2), s.column_text(3)};
+    return Design{s.column_text(0), s.column_text(1), s.column_text(2), s.column_text(3),
+                  s.column_text(4)};
 }
 
 void Db::put_design(const std::string& google_sheet_id, const Design& design, int64_t user_id) {
@@ -436,6 +455,12 @@ void Db::put_design(const std::string& google_sheet_id, const Design& design, in
         s.bind_null(6);
     }
     s.step();
+    if (design.keep_parts) {
+        Stmt keep(db_, "UPDATE sheet_designs SET keep_parts = ? WHERE google_sheet_id = ?;");
+        keep.bind_text(1, *design.keep_parts);
+        keep.bind_text(2, google_sheet_id);
+        keep.step();
+    }
 }
 
 std::vector<Run> Db::list_runs(int64_t sheet_row_id, int limit) {

@@ -8,12 +8,16 @@
 // may import this app's own scripts and nothing else.
 //
 // Messages in:  {id, cmd: 'labels', records, spec, hidden, maxPages, images}
+//                 (records: one per slot, null = an empty slot)
 //               {id, cmd: 'test_page', spec}
+//               {id, cmd: 'pack', records, per, timeBoxMs}  (packing.js: keep each
+//                 part on one sheet; can take up to timeBoxMs)
 // Messages out: {id, progress: {phase: 'pages', page, pages}}
-//               {id, pdf: Uint8Array} (transferred) or {id, error}
+//               {id, pdf: Uint8Array} (transferred), {id, result} (pack) or {id, error}
 
 import { backdropJpeg } from './backdrop.js';
 import { buildLabelsPdf, buildTestPage, optionsFromHidden } from './labels.js';
+import { packRecords } from './packing.js';
 
 const tiles = new Map(); // "id|trans|light" -> Promise<Uint8Array | null>
 
@@ -27,6 +31,11 @@ self.onmessage = async (event) => {
   const { id, cmd } = event.data;
   try {
     let pdf;
+    if (cmd === 'pack') {
+      const { records, per, timeBoxMs } = event.data;
+      self.postMessage({ id, result: packRecords(records, per, { timeBoxMs }) });
+      return;
+    }
     if (cmd === 'test_page') {
       pdf = await buildTestPage(event.data.spec);
     } else if (cmd === 'labels') {
