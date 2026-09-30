@@ -105,4 +105,42 @@ std::string to_winansi(const std::string& utf8) {
     return out;
 }
 
+std::vector<std::string> wrap_lines(const std::string& text, double max_width,
+                                    const std::function<double(const std::string&)>& width) {
+    std::vector<std::string> lines;
+    std::string line;
+    size_t pos = 0;
+    while (pos <= text.size()) {
+        size_t end = text.find(' ', pos);
+        if (end == std::string::npos) end = text.size();
+        std::string word = text.substr(pos, end - pos);
+        pos = end + 1;
+        std::string candidate = line.empty() ? word : line + " " + word;
+        if (width(candidate) <= max_width) {
+            line = std::move(candidate);
+            continue;
+        }
+        if (!line.empty()) {
+            lines.push_back(std::move(line));
+            line.clear();
+            if (width(word) <= max_width) {
+                line = std::move(word);
+                continue;
+            }
+        }
+        // A word wider than a whole line: as many characters per line as
+        // fit (always at least one, so this ends).
+        while (!word.empty()) {
+            size_t n = 1;
+            while (n < word.size() && width(word.substr(0, n + 1)) <= max_width) ++n;
+            if (n == word.size()) break;
+            lines.push_back(word.substr(0, n));
+            word.erase(0, n);
+        }
+        line = std::move(word);
+    }
+    if (!line.empty() || lines.empty()) lines.push_back(std::move(line));
+    return lines;
+}
+
 }  // namespace lugbulk::pdf_text

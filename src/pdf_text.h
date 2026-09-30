@@ -7,7 +7,9 @@
 // mojibake (or crash on characters WinAnsi can't represent).
 #pragma once
 
+#include <functional>
 #include <string>
+#include <vector>
 
 namespace lugbulk::pdf_text {
 
@@ -16,5 +18,13 @@ namespace lugbulk::pdf_text {
 // with '?' rather than throwing — label/report text should never fail to
 // render outright over an unsupported glyph.
 std::string to_winansi(const std::string& utf8);
+
+// Breaks `text` into lines no wider than `max_width`, as measured by
+// `width` (of a line's bytes; WinAnsi text is one byte per character).
+// Lines break at spaces; a single word wider than a line is split between
+// characters as a last resort. Nothing is dropped but the spaces a line
+// breaks at. Always at least one line (empty text gives {""}).
+std::vector<std::string> wrap_lines(const std::string& text, double max_width,
+                                    const std::function<double(const std::string&)>& width);
 
 }  // namespace lugbulk::pdf_text

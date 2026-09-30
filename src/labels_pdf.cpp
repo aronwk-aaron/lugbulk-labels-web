@@ -181,24 +181,20 @@ double string_width_at(PoDoFo::PdfFont* font, const std::string& winansi_text, d
     return font->GetFontMetrics()->StringWidth(winansi_text.c_str());
 }
 
-// Shrinks font size to fit `text` (UTF-8 in, converted to WinAnsi here)
-// within max_width_pt; truncates with an ellipsis as a last resort if even
-// min_size doesn't fit. Returns the WinAnsi-encoded text and its size.
-std::pair<std::string, double> fit_string(PoDoFo::PdfFont* font, const std::string& utf8_text,
-                                          double max_size, double min_size, double max_width_pt) {
-    std::string text = pdf_text::to_winansi(utf8_text);
-
-    double size = max_size;
-    while (size > min_size && string_width_at(font, text, size) > max_width_pt) size -= 0.5;
-    if (string_width_at(font, text, size) <= max_width_pt) return {text, size};
-
-    size = min_size;
-    std::string truncated = text;
-    while (!truncated.empty() && string_width_at(font, truncated + "...", size) > max_width_pt) {
-        truncated.pop_back();
-    }
-    return {truncated.empty() ? text : truncated + "...", size};
+// fit_text for `utf8_text` (converted to WinAnsi here) in `font`.
+FittedText fit_string(PoDoFo::PdfFont* font, const std::string& utf8_text, double max_size,
+                      double min_size, double max_width_pt, double max_height_pt) {
+    return fit_text(pdf_text::to_winansi(utf8_text), max_size, min_size, max_width_pt,
+                    max_height_pt, [font](const std::string& t, double size) {
+                        return string_width_at(font, t, size);
+                    });
 }
+
+// Helvetica's cap height and descender, as fractions of the font size, and
+// the baseline-to-baseline distance of wrapped lines.
+constexpr double kCapHeight = 0.72;
+constexpr double kDescender = 0.22;
+constexpr double kLeading = 1.1;
 
 // Positions and font sizes (points) scaled to the label's height, so every
 // label size gets the same proportions. Parts that are switched off free
@@ -356,6 +352,8 @@ void draw_label(PoDoFo::PdfPainter& painter, PoDoFo::PdfStreamedDocument& doc, d
     };
     double scale = 1.0;
     while (scale > 0.4 && row_width(scale) > text_max) scale -= 0.05;
+    // Past that, keep shrinking rather than let the two overlap.
+    while (scale > 0.01 && row_width(scale) > text_max) scale *= 0.9;
     if (!qty_text.empty()) {
         double size = L.id_size * 0.85 * scale;
         double w = string_width_at(fonts.bold, qty_text, size);
@@ -385,10 +383,29 @@ void draw_label(PoDoFo::PdfPainter& painter, PoDoFo::PdfStreamedDocument& doc, d
         swatch_w = side + L.pad * 0.5;
     }
 
+    bool name_row = opts.show(LabelPart::kName) || opts.show(LabelPart::kCount);
     for (size_t i = 0; i < texts.size(); ++i) {
         double x = text_x + (i < color_lines.size() ? swatch_w : 0);
-        auto [fitted, size] = fit_string(fonts.regular, texts[i], L.small, L.small * 0.7, right - x);
-        draw_text(painter, fonts.regular, size, X(x), Y(L.lines[i]), fitted);
+        // The field's space: its own line, from cap height down to where
+        // the next line's capitals start; the last line gets everything
+        // down to the name row (or the bottom padding).
+        double top = L.lines[i] + L.small * kCapHeight;
+        double bottom = L.lines[i] - L.small * (1.2 - kCapHeight);
+        if (i + 1 == texts.size()) {
+            double limit = name_row ? L.y_name + L.name_size * 0.75 + L.small * 0.15 : L.pad;
+            bottom = std::min(bottom, limit);
+        }
+        FittedText fit = fit_string(fonts.regular, texts[i], L.small, L.small * 0.7, right - x,
+                                    top - bottom);
+        if (fit.lines.size() == 1) {
+            draw_text(painter, fonts.regular, fit.size, X(x), Y(L.lines[i]), fit.lines[0]);
+            continue;
+        }
+        double baseline = top - fit.size * kCapHeight;
+        for (const auto& line : fit.lines) {
+            draw_text(painter, fonts.regular, fit.size, X(x), Y(baseline), line);
+            baseline -= fit.leading;
+        }
     }
 
     double counter_w = 0;
@@ -403,10 +420,17 @@ void draw_label(PoDoFo::PdfPainter& painter, PoDoFo::PdfStreamedDocument& doc, d
         // Centered on the label; kept clear of the counter on both sides so
         // it stays visually centered.
         double name_max = width - 2 * L.pad - 2 * (counter_w + L.pad);
-        auto [name_text, name_size] =
-            fit_string(fonts.bold, record.person, L.name_size, L.name_size * 0.55, name_max);
-        double name_w = string_width_at(fonts.bold, name_text, name_size);
-        draw_text(painter, fonts.bold, name_size, X((width - name_w) / 2), Y(L.y_name), name_text);
+        // A name too long for one line wraps within the name row: from its
+        // usual cap height down to half the bottom padding.
+        double top = L.y_name + L.name_size * kCapHeight;
+        FittedText fit = fit_string(fonts.bold, record.person, L.name_size, L.name_size * 0.55,
+                                    name_max, top - L.pad * 0.5);
+        double baseline = fit.lines.size() == 1 ? L.y_name : top - fit.size * kCapHeight;
+        for (const auto& line : fit.lines) {
+            double name_w = string_width_at(fonts.bold, line, fit.size);
+            draw_text(painter, fonts.bold, fit.size, X((width - name_w) / 2), Y(baseline), line);
+            baseline -= fit.leading;
+        }
     }
 }
 
@@ -429,6 +453,27 @@ void for_each_slot(const layout::LabelSpec& spec, int count, F place) {
 }
 
 }  // namespace
+
+FittedText fit_text(const std::string& text, double max_size, double min_size, double max_width,
+                    double max_height,
+                    const std::function<double(const std::string&, double)>& width) {
+    double size = max_size;
+    while (size > min_size && width(text, size) > max_width) size -= 0.5;
+    if (width(text, size) <= max_width) return {{text}, size, size * kLeading};
+
+    // Too long for one line even at the smallest size: wrap, shrinking
+    // until the lines fit the field's height. The size only bottoms out
+    // at a tenth of a point, where anything fits, so this always ends.
+    size = min_size;
+    for (;;) {
+        auto lines = pdf_text::wrap_lines(
+            text, max_width, [&](const std::string& t) { return width(t, size); });
+        double height = size * (kCapHeight + kDescender) +
+                        static_cast<double>(lines.size() - 1) * size * kLeading;
+        if (height <= max_height || size <= 0.1) return {lines, size, size * kLeading};
+        size = std::max(0.1, size > 2 ? size - 0.25 : size * 0.9);
+    }
+}
 
 namespace {
 

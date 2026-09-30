@@ -5,7 +5,8 @@
 // With the default options (report_options.js DEFAULTS) the CSVs are byte
 // for byte what the server writes (tests/js/parity.test.mjs) and the PDFs
 // have the same layout: US Letter, 15 mm margins, Helvetica 9 pt rows
-// 16 pt apart, a gray header row and zebra stripes. Options add paper
+// 16 pt apart (taller where a cell wraps: text is never cut off), a gray
+// header row and zebra stripes. Options add paper
 // sizes, sorting, columns, photos and so on.
 //
 // Everything here is a pure function of the loaded records (load.js's
@@ -228,6 +229,48 @@ function colorColumns(o, width) {
 const PHOTO_WIDTH = 34;
 const PHOTO_ROW = 30;
 const ROW = 16;
+// Each wrapped line past a row's first adds this much to its height.
+const LINE = 11;
+
+// A table row's height for text `lines` lines tall (as the server's
+// reports::report_row_height).
+export const rowHeightFor = (lines) => ROW + Math.max(0, lines - 1) * LINE;
+
+// Breaks `text` into lines no wider than `maxW` as `width` measures them,
+// at spaces; a word wider than a whole line is split between characters
+// as a last resort. Nothing is dropped but the spaces lines break at.
+// Always at least one line. As the server's pdf_text::wrap_lines.
+export function wrapText(text, maxW, width) {
+  const lines = [];
+  let line = '';
+  for (const word of String(text).split(' ')) {
+    const candidate = line ? `${line} ${word}` : word;
+    if (width(candidate) <= maxW) {
+      line = candidate;
+      continue;
+    }
+    if (line) {
+      lines.push(line);
+      line = '';
+      if (width(word) <= maxW) {
+        line = word;
+        continue;
+      }
+    }
+    // Split by characters (code points), at least one per line.
+    let chars = [...word];
+    while (chars.length) {
+      let n = 1;
+      while (n < chars.length && width(chars.slice(0, n + 1).join('')) <= maxW) n++;
+      if (n === chars.length) break;
+      lines.push(chars.slice(0, n).join(''));
+      chars = chars.slice(n);
+    }
+    line = chars.join('');
+  }
+  if (line || !lines.length) lines.push(line);
+  return lines;
+}
 
 // The packing checklist: one section per person (last-name order by
 // default) listing their labels in label order, with a tick box per line.
@@ -473,27 +516,33 @@ async function tablePdf({ docTitle, size, running = null, columns, rowHeight, co
     }
   }
 
-  // Truncates with "..." to fit `maxW` at 9 pt.
-  const fit = (font, text, maxW) => {
-    let t = winAnsi(text);
-    if (font.widthOfTextAtSize(t, 9) <= maxW) return t;
-    const chars = [...t];
-    while (chars.length && font.widthOfTextAtSize(`${chars.join('')}...`, 9) > maxW) chars.pop();
-    return `${chars.join('')}...`;
-  };
+  // Cell text wraps to its column at 9 pt (see wrapText): nothing is cut.
+  const wrap = (font, s, maxW, sz = 9) =>
+    wrapText(winAnsi(s), maxW, (t) => font.widthOfTextAtSize(t, sz));
   const text = (page, s, x, y, font, sz) => {
     if (s) page.drawText(s, { x, y, size: sz, font, color: BLACK });
   };
   const band = (page, y, h, color) =>
     page.drawRectangle({ x: MARGIN, y: y - h + 4, width: tableW, height: h, color });
 
-  const drawCells = (page, font, y, h, cells, kinds, image) => {
-    const baseline = y + 4 - h / 2 - 4;
+  // Each cell's lines (none for tick boxes and photos) and the row height
+  // they need: one line fits a 16 pt row, each more adds LINE.
+  const cellLines = (font, cells, kinds) =>
+    cells.slice(0, widths.length).map((s, c) => {
+      const kind = kinds ? columns[c].kind : undefined;
+      return kind === 'check' || kind === 'photo' ? [] : wrap(font, s, widths[c] - 6);
+    });
+  const cellsHeight = (lines) => rowHeightFor(Math.max(1, ...lines.map((l) => l.length)));
+
+  // A row's top is y + 4 (its band runs from there down h). Every cell's
+  // lines are centred in the row, so a one-line row is drawn as before.
+  const drawCells = (page, font, y, h, lines, kinds, image) => {
+    const middle = y + 4 - h / 2 - 4;
     let x = MARGIN;
-    for (let c = 0; c < cells.length && c < widths.length; c++) {
+    for (let c = 0; c < lines.length; c++) {
       const kind = kinds ? columns[c].kind : undefined;
       if (kind === 'check') {
-        page.drawRectangle({ x: x + 4, y: baseline - 2, width: 8, height: 8, borderColor: BLACK, borderWidth: 0.8 });
+        page.drawRectangle({ x: x + 4, y: middle - 2, width: 8, height: 8, borderColor: BLACK, borderWidth: 0.8 });
       } else if (kind === 'photo') {
         const img = image ? embedded.get(image) : null;
         if (img) {
@@ -505,46 +554,93 @@ async function tablePdf({ docTitle, size, running = null, columns, rowHeight, co
           page.drawImage(img, { x: x + 2 + (boxW - w) / 2, y: y + 4 - h + 2 + (boxH - ih) / 2, width: w, height: ih });
         }
       } else {
-        text(page, fit(font, cells[c], widths[c] - 6), x + 3, baseline, font, 9);
+        let baseline = middle + ((lines[c].length - 1) * LINE) / 2;
+        for (const line of lines[c]) {
+          text(page, line, x + 3, baseline, font, 9);
+          baseline -= LINE;
+        }
       }
       x += widths[c];
     }
   };
 
+  // Rows laid out once: their lines and heights.
+  const headerLines = cellLines(bold, columns.map((c) => c.header), false);
+  const headerH = cellsHeight(headerLines);
+  const laid = new Map();
+  for (const s of sections) {
+    for (const r of s.rows) {
+      if (r.group) {
+        const lines = wrap(bold, r.group, tableW - 6);
+        laid.set(r, { lines, h: rowHeightFor(lines.length) });
+      } else if (r.total) {
+        const lines = cellLines(bold, r.total, false);
+        laid.set(r, { lines, h: cellsHeight(lines) });
+      } else if (r.signoff) {
+        laid.set(r, { h: 30 });
+      } else {
+        const lines = cellLines(regular, r.cells, true);
+        laid.set(r, { lines, h: Math.max(rowHeight, cellsHeight(lines)) });
+      }
+    }
+  }
+  const rowH = (r) => laid.get(r).h;
+
   let page = null;
   let y = 0;
   let zebra = 0;
-  const headingHeight = (s) => 16 + 16 * s.lines.length + 16 + ROW;
+  // Title (14 pt) and subtitle lines wrap to the table's width.
+  const headingLines = (s, cont) => ({
+    title: wrap(bold, s.title + (cont && continuous ? ' (continued)' : ''), tableW, 14),
+    lines: s.lines.flatMap((line) => wrap(regular, line, tableW)),
+  });
+  const headingHeight = (s, cont) => {
+    const h = headingLines(s, cont);
+    return 16 * h.title.length + 16 * h.lines.length + 16 + headerH;
+  };
 
   const startPage = () => {
     page = doc.addPage([pageW, pageH]);
     y = pageH - MARGIN;
     if (running) {
-      let x = MARGIN;
+      // Title and subtitle on one line when they fit, else each wrapped.
       const title = winAnsi(running.title);
-      text(page, title, x, y - 10, bold, 10);
-      if (title) x += bold.widthOfTextAtSize(title, 10) + 8;
-      text(page, winAnsi(running.subtitle), x, y - 10, regular, 9);
-      y -= 20;
+      const sub = winAnsi(running.subtitle);
+      const titleW = title ? bold.widthOfTextAtSize(title, 10) + 8 : 0;
+      if (titleW + regular.widthOfTextAtSize(sub, 9) <= tableW) {
+        text(page, title, MARGIN, y - 10, bold, 10);
+        text(page, sub, MARGIN + titleW, y - 10, regular, 9);
+        y -= 20;
+      } else {
+        const lines = [
+          ...(title ? wrap(bold, running.title, tableW, 10).map((l) => [l, bold, 10]) : []),
+          ...(sub ? wrap(regular, running.subtitle, tableW).map((l) => [l, regular, 9]) : []),
+        ];
+        lines.forEach(([l, font, sz], i) => text(page, l, MARGIN, y - 10 - 12 * i, font, sz));
+        y -= 20 + 12 * (lines.length - 1);
+      }
     }
   };
   const drawHeading = (s, cont) => {
-    text(page, winAnsi(s.title + (cont && continuous ? ' (continued)' : '')), MARGIN, y - 14, bold, 14);
-    y -= 16;
-    for (const line of s.lines) {
-      text(page, winAnsi(line), MARGIN, y - 10, regular, 9);
+    const h = headingLines(s, cont);
+    for (const line of h.title) {
+      text(page, line, MARGIN, y - 14, bold, 14);
+      y -= 16;
+    }
+    for (const line of h.lines) {
+      text(page, line, MARGIN, y - 10, regular, 9);
       y -= 16;
     }
     y -= 16;
-    band(page, y, ROW, HEADER_FILL);
-    drawCells(page, bold, y, ROW, columns.map((c) => c.header), false, null);
-    y -= ROW;
+    band(page, y, headerH, HEADER_FILL);
+    drawCells(page, bold, y, headerH, headerLines, false, null);
+    y -= headerH;
     zebra = 0;
   };
 
   sections.forEach((s, si) => {
     const first = s.rows.length ? rowH(s.rows[0]) : 0;
-    if (!page || !continuous || y - headingHeight(s) - first < MARGIN) {
+    if (!page || !continuous || y - 12 - headingHeight(s, false) - first < MARGIN) {
       startPage();
     } else if (si > 0) {
       y -= 12; // gap between people on the same page
@@ -563,19 +659,15 @@ async function tablePdf({ docTitle, size, running = null, columns, rowHeight, co
   });
   if (!page) doc.addPage([pageW, pageH]);
 
-  function rowH(r) {
-    return r.signoff ? 30 : r.group || r.total ? ROW : rowHeight;
-  }
-
   function drawRow(r) {
-    const h = rowH(r);
+    const { h, lines } = laid.get(r);
     if (r.group) {
       band(page, y, h, GROUP_FILL);
-      text(page, fit(bold, r.group, tableW - 6), MARGIN + 3, y - 8, bold, 9);
+      lines.forEach((line, i) => text(page, line, MARGIN + 3, y - 8 - LINE * i, bold, 9));
       zebra = 0;
     } else if (r.total) {
       page.drawLine({ start: { x: MARGIN, y: y + 4 }, end: { x: MARGIN + tableW, y: y + 4 }, thickness: 0.8, color: BLACK });
-      drawCells(page, bold, y, h, r.total, false, null);
+      drawCells(page, bold, y, h, lines, false, null);
     } else if (r.signoff) {
       const base = y - 18;
       text(page, 'Packed by:', MARGIN + 3, base, regular, 9);
@@ -585,7 +677,7 @@ async function tablePdf({ docTitle, size, running = null, columns, rowHeight, co
     } else {
       if (zebra % 2 === 1) band(page, y, h, ZEBRA_FILL);
       zebra++;
-      drawCells(page, regular, y, h, r.cells, true, r.image);
+      drawCells(page, regular, y, h, lines, true, r.image);
     }
     y -= h;
   }

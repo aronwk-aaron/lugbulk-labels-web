@@ -122,8 +122,8 @@ std::string lot_counts_csv(const std::vector<LabelRecord>& records, SortBy sort_
 namespace {
 
 // A simple paginated table PDF: title, subtitle, then a header row and
-// zebra-striped body rows, repeated per page. Cell text is shrunk/
-// truncated to fit its column.
+// zebra-striped body rows, repeated per page. Cell text wraps within
+// its column and a row grows to its tallest cell; nothing is cut off.
 struct Section {
     std::string title, subtitle;
     std::vector<std::vector<std::string>> rows;
@@ -161,45 +161,78 @@ std::vector<uint8_t> sections_pdf(const std::vector<Section>& sections,
     double table_w = 0;
     for (double w : col_widths) table_w += w;
 
-    // Truncates `text` (UTF-8) with "..." to fit `max_w` at 9pt; returns WinAnsi.
-    auto fit = [](PoDoFo::PdfFont* font, const std::string& text, double max_w) {
-        std::string t = pdf_text::to_winansi(text);
-        font->SetFontSize(9.0f);
-        if (font->GetFontMetrics()->StringWidth(t.c_str()) <= max_w) return t;
-        while (!t.empty() && font->GetFontMetrics()->StringWidth((t + "...").c_str()) > max_w) {
-            t.pop_back();
+    // Wraps `text` (UTF-8) to `max_w` at `size` pt; returns WinAnsi lines.
+    auto wrap = [](PoDoFo::PdfFont* font, const std::string& text, double size, double max_w) {
+        return pdf_text::wrap_lines(pdf_text::to_winansi(text), max_w, [&](const std::string& t) {
+            font->SetFontSize(static_cast<float>(size));
+            return static_cast<double>(font->GetFontMetrics()->StringWidth(t.c_str()));
+        });
+    };
+    using Cells = std::vector<std::vector<std::string>>;  // each cell's lines
+    auto wrap_cells = [&](PoDoFo::PdfFont* font, const std::vector<std::string>& cells,
+                          bool checkbox) {
+        Cells out;
+        for (size_t c = 0; c < cells.size() && c < col_widths.size(); ++c) {
+            out.push_back(c == 0 && checkbox ? std::vector<std::string>{}
+                                             : wrap(font, cells[c], 9.0, col_widths[c] - 6));
         }
-        return t + "...";
+        return out;
+    };
+    auto height_of = [](const Cells& cells) {
+        size_t lines = 1;
+        for (const auto& c : cells) lines = std::max(lines, c.size());
+        return report_row_height(lines);
     };
 
+    const double row_h = kReportRowHeight;
+    const double line_h = kReportLineHeight;
+    // Draws a row whose top is y + 4 (the band runs from there down `h`).
     auto draw_row = [&](PoDoFo::PdfPainter& painter, PoDoFo::PdfFont* font, double y,
-                        const std::vector<std::string>& cells) {
+                        const Cells& cells, bool checkbox) {
         font->SetFontSize(9.0f);
         painter.SetFont(font);
         double x = margin;
-        for (size_t c = 0; c < cells.size() && c < col_widths.size(); ++c) {
-            if (c == 0 && checkbox_column && font != font_bold) {
+        for (size_t c = 0; c < cells.size(); ++c) {
+            if (c == 0 && checkbox) {
                 painter.SetStrokeWidth(0.8);
-                painter.Rectangle(x + 4, y - 16 + 6, 8, 8);
+                painter.Rectangle(x + 4, y - row_h + 6, 8, 8);
                 painter.Stroke();
             } else {
-                std::string text = fit(font, cells[c], col_widths[c] - 6);
-                painter.DrawText(x + 3, y - 16 + 8, PoDoFo::PdfString(text.c_str()));
+                double baseline = y - row_h + 8;
+                for (const auto& line : cells[c]) {
+                    painter.DrawText(x + 3, baseline, PoDoFo::PdfString(line.c_str()));
+                    baseline -= line_h;
+                }
             }
             x += col_widths[c];
         }
     };
+    auto band = [&](PoDoFo::PdfPainter& painter, double y, double h, double gray) {
+        painter.SetColor(gray, gray, gray);
+        painter.Rectangle(margin, y - h + 4, table_w, h);
+        painter.Fill();
+        painter.SetColor(0, 0, 0);
+    };
 
-    const double row_h = 16.0;
-    const int header_h_rows = 3;  // title + subtitle + spacer, in row units
-    const int rows_per_page = std::max(
-        1, static_cast<int>((page_h - 2 * margin) / row_h) - header_h_rows - 1 /* table header */);
+    const Cells header_cells = wrap_cells(font_bold, headers, false);
+    const double header_h = height_of(header_cells);
     for (const Section& section : sections) {
-    const std::string& title = section.title;
-    const std::string& subtitle = section.subtitle;
-    const auto& rows = section.rows;
-    int total_pages = rows.empty() ? 1 : static_cast<int>(
-        (rows.size() + rows_per_page - 1) / rows_per_page);
+    // The heading (title, subtitle, a gap, the table header) repeats on
+    // every page of the section; title and subtitle wrap to the table.
+    const double text_w = std::max(table_w, 100.0);
+    const auto title_lines = wrap(font_bold, section.title, 14.0, text_w);
+    const auto subtitle_lines = wrap(font_regular, section.subtitle, 9.0, text_w);
+    const double heading_h =
+        row_h * static_cast<double>(title_lines.size() + subtitle_lines.size() + 1) + header_h;
+
+    std::vector<Cells> rows;
+    std::vector<double> heights;
+    for (const auto& r : section.rows) {
+        rows.push_back(wrap_cells(font_regular, r, checkbox_column));
+        heights.push_back(height_of(rows.back()));
+    }
+    std::vector<int> pages = paginate_rows(heights, page_h - 2 * margin - heading_h);
+    int total_pages = pages.empty() ? 1 : pages.back() + 1;
 
     size_t idx = 0;
     for (int page = 0; page < total_pages; ++page) {
@@ -211,30 +244,27 @@ std::vector<uint8_t> sections_pdf(const std::vector<Section>& sections,
 
         font_bold->SetFontSize(14.0f);
         painter.SetFont(font_bold);
-        painter.DrawText(margin, y - 14, PoDoFo::PdfString(pdf_text::to_winansi(title).c_str()));
-        y -= row_h;
+        for (const auto& line : title_lines) {
+            painter.DrawText(margin, y - 14, PoDoFo::PdfString(line.c_str()));
+            y -= row_h;
+        }
 
         font_regular->SetFontSize(9.0f);
         painter.SetFont(font_regular);
-        painter.DrawText(margin, y - 10, PoDoFo::PdfString(pdf_text::to_winansi(subtitle).c_str()));
-        y -= row_h * 2;
-
-        painter.SetColor(0.85, 0.85, 0.85);
-        painter.Rectangle(margin, y - row_h + 4, table_w, row_h);
-        painter.Fill();
-        painter.SetColor(0, 0, 0);
-        draw_row(painter, font_bold, y, headers);
+        for (const auto& line : subtitle_lines) {
+            painter.DrawText(margin, y - 10, PoDoFo::PdfString(line.c_str()));
+            y -= row_h;
+        }
         y -= row_h;
 
-        for (int r = 0; r < rows_per_page && idx < rows.size(); ++r, ++idx) {
-            if (r % 2 == 1) {
-                painter.SetColor(0.96, 0.96, 0.96);
-                painter.Rectangle(margin, y - row_h + 4, table_w, row_h);
-                painter.Fill();
-                painter.SetColor(0, 0, 0);
-            }
-            draw_row(painter, font_regular, y, rows[idx]);
-            y -= row_h;
+        band(painter, y, header_h, 0.85);
+        draw_row(painter, font_bold, y, header_cells, false);
+        y -= header_h;
+
+        for (int r = 0; idx < rows.size() && pages[idx] == page; ++r, ++idx) {
+            if (r % 2 == 1) band(painter, y, heights[idx], 0.96);
+            draw_row(painter, font_regular, y, rows[idx], checkbox_column);
+            y -= heights[idx];
         }
 
         painter.FinishPage();
@@ -355,6 +385,21 @@ std::vector<uint8_t> parts_pdf(const std::vector<ordering::PartSummary>& parts) 
                      {"#", "Element", "Description", "LEGO / BrickLink color", "Pieces", "People",
                       "Weight"},
                      {24, 50, 150, 150, 45, 40, 70}, rows);
+}
+
+std::vector<int> paginate_rows(const std::vector<double>& heights, double room) {
+    std::vector<int> pages;
+    int page = 0;
+    double used = 0;
+    for (double h : heights) {
+        if (used > 0 && used + h > room + 1e-9) {
+            ++page;
+            used = 0;
+        }
+        pages.push_back(page);
+        used += h;
+    }
+    return pages;
 }
 
 }  // namespace lugbulk::reports

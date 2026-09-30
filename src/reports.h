@@ -54,4 +54,17 @@ std::vector<uint8_t> checklist_pdf(const std::vector<LabelRecord>& records);
 // "~4.6 g/pc" (estimated), "12 g/pc" (from the sheet), or "size unknown".
 std::string weight_text(const ordering::PartSummary& part);
 
+// Report table rows: 9 pt text, one line in a 16 pt row, and each more
+// line a wrapped cell needs adds kReportLineHeight.
+inline constexpr double kReportRowHeight = 16.0;
+inline constexpr double kReportLineHeight = 11.0;
+inline double report_row_height(size_t lines) {
+    return kReportRowHeight + static_cast<double>(lines > 1 ? lines - 1 : 0) * kReportLineHeight;
+}
+
+// Which page (0-based) each row of the given heights lands on, when every
+// page has `room` points for rows (below its repeated heading and table
+// header). A row taller than a whole page still gets a page of its own.
+std::vector<int> paginate_rows(const std::vector<double>& heights, double room);
+
 }  // namespace lugbulk::reports

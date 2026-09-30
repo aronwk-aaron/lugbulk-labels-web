@@ -26,6 +26,7 @@
 #include "json_check.h"
 #include "labels_pdf.h"
 #include "oauth.h"
+#include "pdf_text.h"
 #include "rate_limits.h"
 #include "db.h"
 #include "samples.h"
@@ -371,6 +372,105 @@ void test_placeholder_color_and_catalog_weight() {
     CHECK_EQ(parts[0].weight_source, std::string("sheet"));
     CHECK_EQ(parts[1].weight_source, std::string("bricklink"));
     CHECK(parts[1].weight && near(*parts[1].weight, 2.5));
+}
+
+// Text with the spaces taken out: what must survive wrapping unchanged.
+std::string no_spaces(const std::string& s) {
+    std::string out;
+    for (char c : s) {
+        if (c != ' ') out += c;
+    }
+    return out;
+}
+
+std::string joined(const std::vector<std::string>& lines) {
+    std::string out;
+    for (const auto& l : lines) out += l;
+    return out;
+}
+
+// Nothing is cut off: long cell and label text wraps (breaking an overlong
+// word by characters only as a last resort), and report rows of different
+// heights paginate without running off the page.
+void test_no_truncation() {
+    // A monospace stand-in for font metrics: every character 1 unit wide
+    // at size 1.
+    auto chars = [](const std::string& t) { return static_cast<double>(t.size()); };
+    const std::string desc =
+        "BRICK 1X2 W/ BOW 1/2 AND CROSS AXLE HOLE, TRANSPARENT FLUORESCENT REDDISH ORANGE, "
+        "WITH PRINTED STRIPES ON BOTH SIDES 012";
+    CHECK_EQ(desc.size(), size_t{120});
+    auto lines = pdf_text::wrap_lines(desc, 30, chars);
+    CHECK(lines.size() >= 4);
+    for (const auto& l : lines) CHECK(l.size() <= 30);
+    CHECK_EQ(no_spaces(joined(lines)), no_spaces(desc));
+    for (const auto& l : lines) CHECK(l.empty() || (l.front() != ' ' && l.back() != ' '));
+
+    // A single word longer than a line: split by characters, none lost.
+    const std::string word(70, 'W');
+    lines = pdf_text::wrap_lines("Ann " + word + " end", 20, chars);
+    for (const auto& l : lines) CHECK(l.size() <= 20);
+    CHECK_EQ(no_spaces(joined(lines)), "Ann" + word + "end");
+    CHECK_EQ(pdf_text::wrap_lines("", 10, chars).size(), size_t{1});
+    CHECK_EQ(pdf_text::wrap_lines("Short", 10, chars).size(), size_t{1});
+
+    // Label fields: short text is drawn exactly as before (one line, same
+    // size); text that fits after shrinking shrinks as before; longer text
+    // wraps and shrinks to fit the field, never cut.
+    auto width = [](const std::string& t, double size) { return 0.5 * size * t.size(); };
+    auto fit = labels_pdf::fit_text("BRICK 1X1", 10, 7, 100, 12, width);
+    CHECK(fit.lines.size() == 1 && fit.lines[0] == "BRICK 1X1" && near(fit.size, 10));
+    fit = labels_pdf::fit_text(std::string(24, 'x'), 10, 7, 100, 12, width);
+    CHECK(fit.lines.size() == 1 && near(fit.size, 8));  // 24 * 0.5 * 8 = 96
+    for (const std::string& text :
+         {std::string("LEGO: Transparent Fluorescent Reddish Orange / Trans-Neon Orange"),
+          std::string("Medium Stone Grey / Light Bluish Gray"), desc,
+          std::string("BL: ") + std::string(90, 'Z')}) {
+        for (double height : {12.0, 30.0}) {
+            fit = labels_pdf::fit_text(text, 10, 7, 60, height, width);
+            CHECK_EQ(no_spaces(joined(fit.lines)), no_spaces(text));
+            for (const auto& l : fit.lines) CHECK(width(l, fit.size) <= 60 + 1e-9);
+            double block = fit.size * 0.94 + (fit.lines.size() - 1) * fit.leading;
+            CHECK(block <= height + 1e-9);
+            CHECK(fit.size > 0);
+        }
+    }
+
+    // Report rows: 16 pt per row, 11 more per extra line; pages never
+    // overfill and rows stay in order.
+    CHECK(near(reports::report_row_height(1), 16) && near(reports::report_row_height(3), 38));
+    std::vector<double> heights = {16, 16, 38, 16, 60, 16, 16, 27, 16};
+    auto pages = reports::paginate_rows(heights, 100);
+    CHECK_EQ(pages.size(), heights.size());
+    std::vector<double> used(static_cast<size_t>(pages.back() + 1), 0);
+    for (size_t i = 0; i < pages.size(); ++i) {
+        if (i) CHECK(pages[i] == pages[i - 1] || pages[i] == pages[i - 1] + 1);
+        used[static_cast<size_t>(pages[i])] += heights[i];
+    }
+    for (double u : used) CHECK(u <= 100);
+    CHECK_EQ(pages[4], 1);  // 16+16+38+16 = 86: the 60 pt row starts page 2
+
+    // The PDFs build with text far too long for any column or label.
+    std::vector<LabelRecord> records = {
+        rec("Zed Quillfeather-Montgomery-Ashworth", "6284070", desc, "250"),
+        rec("Ann Example", "300126", "PLATE 1X1", "10")};
+    records[0].lego_color = "Transparent Fluorescent Reddish Orange";
+    records[0].bl_color = "Trans-Neon Orange";
+    records[1].lego_color = "Medium Stone Grey";
+    records[1].bl_color = "Light Bluish Gray";
+    CHECK(reports::checklist_pdf(records).size() > 1000);
+    CHECK(reports::parts_pdf(ordering::summarize_parts(records, ordering::PartOrder::kSheet)).size() >
+          1000);
+    char dir_template[] = "/tmp/lugbulk_wrap_XXXXXX";
+    std::string dir = mkdtemp(dir_template);
+    for (const auto& r : records) std::ofstream(dir + "/" + r.element_id + ".jpg");
+    for (const char* stock : {"avery5160", "avery5162", "dymo30857"}) {
+        auto pdf = labels_pdf::build_labels_pdf(records, dir, *layout::find_label_spec(stock),
+                                                *labels_pdf::LabelOptions::from_hidden(""));
+        CHECK(pdf.size() > 500);
+    }
+    for (const auto& r : records) std::remove((dir + "/" + r.element_id + ".jpg").c_str());
+    rmdir(dir.c_str());
 }
 
 void test_labels_pdf_every_spec() {
@@ -754,6 +854,7 @@ int main() {
         {"json_check", test_json_check},
         {"check_text", test_check_text},
         {"labels_pdf_every_spec", test_labels_pdf_every_spec},
+        {"no_truncation", test_no_truncation},
     };
     for (const auto& [name, fn] : tests) {
         int before = g_failures;

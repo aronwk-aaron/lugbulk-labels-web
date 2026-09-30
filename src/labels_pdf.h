@@ -10,6 +10,7 @@
 
 #include <array>
 #include <cstdint>
+#include <functional>
 #include <optional>
 #include <string_view>
 #include <string>
@@ -95,5 +96,23 @@ std::vector<uint8_t> build_labels_pdf(const std::vector<LabelRecord>& records,
 // One page with every label position outlined and numbered, to print on
 // plain paper and hold against the label stock to check alignment.
 std::vector<uint8_t> build_test_page(const layout::LabelSpec& spec);
+
+// How one label field's text is drawn: its lines (WinAnsi), font size and
+// the distance between baselines.
+struct FittedText {
+    std::vector<std::string> lines;
+    double size = 0;
+    double leading = 0;
+};
+
+// Fits `winansi_text` into a field `max_width` wide: one line, shrunk from
+// `max_size` down to `min_size` in half-point steps, when that fits (the
+// usual case, drawn exactly as before). Otherwise it wraps onto more lines
+// and shrinks further until the lines fit `max_height` (cap height of the
+// first line to the descenders of the last). Nothing is ever cut off.
+// `width(text, size)` measures a line.
+FittedText fit_text(const std::string& winansi_text, double max_size, double min_size,
+                    double max_width, double max_height,
+                    const std::function<double(const std::string&, double)>& width);
 
 }  // namespace lugbulk::labels_pdf
