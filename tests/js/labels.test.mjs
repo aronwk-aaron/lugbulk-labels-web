@@ -11,7 +11,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { test } from 'node:test';
 
-import { PDFDocument, PDFRawStream, StandardFonts, decodePDFRawStream } from '../../static/js/vendor/pdf-lib.js';
+import { PDFDocument, PDFRawStream, decodePDFRawStream } from '../../static/js/vendor/pdf-lib.js';
 import { backdropPixels } from '../../static/js/backdrop.js';
 import * as labels from '../../static/js/labels.js';
 
@@ -20,13 +20,6 @@ const skip = dir ? false : 'GOLDEN_DIR not set (see tests/golden.cpp)';
 const specsDoc = JSON.parse(readFileSync(new URL('../../data/label_specs.json', import.meta.url), 'utf8'));
 const specById = (id) => specsDoc.specs.find((s) => s.id === id);
 
-async function measurer() {
-  const doc = await PDFDocument.create();
-  return labels.fontMeasure({
-    regular: await doc.embedFont(StandardFonts.Helvetica),
-    bold: await doc.embedFont(StandardFonts.HelveticaBold),
-  });
-}
 
 const near = (a, b, what) => assert.ok(Math.abs(a - b) <= 0.01, `${what}: ${a} vs ${b}`);
 function nearBox(a, b, what, keys) {
@@ -37,7 +30,7 @@ function nearBox(a, b, what, keys) {
 
 test('label layout matches C++ (labels.json)', { skip }, async () => {
   const g = JSON.parse(readFileSync(join(dir, 'labels.json'), 'utf8'));
-  const measure = await measurer();
+  const measure = labels.helveticaMeasure;
   assert.ok(g.cases.length >= 100);
   for (const c of g.cases) {
     const what = `${c.spec} hide=${c.hidden} record ${c.record}`;
@@ -146,7 +139,7 @@ test('labels PDF: previews stop at maxPages; rolls get one label a page', async 
 });
 
 test('no truncation: a huge name and description still fit, whole', async () => {
-  const measure = await measurer();
+  const measure = labels.helveticaMeasure;
   const spec = specById('dymo30252');
   const w = spec.label_width_mm * labels.MM_TO_PT;
   const h = spec.label_height_mm * labels.MM_TO_PT;

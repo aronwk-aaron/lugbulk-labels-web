@@ -271,10 +271,76 @@ export function qrMatrix(text) {
   return rows;
 }
 
-// A text measurer over pdf-lib fonts. PoDoFo measures at the size as a
-// float (PdfFont::SetFontSize), so this does too.
-export function fontMeasure(fonts) {
-  return (font, text, size) => fonts[font].widthOfTextAtSize(text, Math.fround(size));
+// Text widths exactly as the server measures them (string_width_at:
+// PoDoFo 0.9.8's PdfFontMetricsBase14::StringWidth), so labels lay out the
+// same as they always have. Two things differ from pdf-lib's
+// widthOfTextAtSize, which is why that isn't used:
+//  - no kerning (pdf-lib kerns, e.g. "colon space" in "Qty: 150"; neither
+//    side kerns what it draws);
+//  - PoDoFo looks each WinAnsi byte up by its code in the AFM's
+//    StandardEncoding, not WinAnsi, so ' and ` and most bytes >= 0x80 get
+//    another glyph's width (or the space's, 278).
+// HELVETICA_WIDTHS[font][byte - 0x20]: that lookup for bytes 0x20-0xFF, in
+// 1/1000 em, from PoDoFo 0.9.8's PdfFontFactoryBase14Data.h.
+const HELVETICA_WIDTHS = {
+  regular: [
+    278, 278, 355, 556, 556, 889, 667, 222, 333, 333, 389, 584, 278, 333, 278, 278,
+    556, 556, 556, 556, 556, 556, 556, 556, 556, 556, 278, 278, 584, 584, 584, 556,
+    1015, 667, 667, 722, 722, 667, 611, 778, 722, 278, 500, 667, 556, 833, 722, 778,
+    667, 778, 722, 667, 611, 722, 667, 944, 667, 667, 611, 278, 278, 278, 469, 556,
+    222, 556, 556, 500, 556, 556, 278, 556, 556, 222, 222, 500, 222, 833, 556, 556,
+    556, 556, 333, 500, 278, 556, 500, 722, 500, 500, 500, 334, 260, 334, 584, 278,
+    278, 278, 278, 278, 278, 278, 278, 278, 278, 278, 278, 278, 278, 278, 278, 278,
+    278, 278, 278, 278, 278, 278, 278, 278, 278, 278, 278, 278, 278, 278, 278, 278,
+    278, 333, 556, 556, 167, 556, 556, 556, 556, 191, 333, 556, 333, 333, 500, 500,
+    278, 556, 556, 556, 278, 278, 537, 350, 222, 333, 333, 556, 1000, 1000, 278, 611,
+    278, 333, 333, 333, 333, 333, 333, 333, 333, 278, 333, 333, 278, 333, 333, 333,
+    1000, 278, 278, 278, 278, 278, 278, 278, 278, 278, 278, 278, 278, 278, 278, 278,
+    278, 1000, 278, 370, 278, 278, 278, 278, 556, 778, 1000, 365, 278, 278, 278, 278,
+    278, 889, 278, 278, 278, 278, 278, 278, 222, 611, 944, 611, 278, 278, 278, 278,
+  ],
+  bold: [
+    278, 333, 474, 556, 556, 889, 722, 278, 333, 333, 389, 584, 278, 333, 278, 278,
+    556, 556, 556, 556, 556, 556, 556, 556, 556, 556, 333, 333, 584, 584, 584, 611,
+    975, 722, 722, 722, 722, 667, 611, 778, 722, 278, 556, 722, 611, 833, 722, 778,
+    667, 778, 722, 667, 611, 722, 667, 944, 667, 667, 611, 333, 278, 333, 584, 556,
+    278, 556, 611, 556, 611, 556, 333, 611, 611, 278, 278, 556, 278, 889, 611, 611,
+    611, 611, 389, 556, 333, 611, 556, 778, 556, 556, 500, 389, 280, 389, 584, 278,
+    278, 278, 278, 278, 278, 278, 278, 278, 278, 278, 278, 278, 278, 278, 278, 278,
+    278, 278, 278, 278, 278, 278, 278, 278, 278, 278, 278, 278, 278, 278, 278, 278,
+    278, 333, 556, 556, 167, 556, 556, 556, 556, 238, 500, 556, 333, 333, 611, 611,
+    278, 556, 556, 556, 278, 278, 556, 350, 278, 500, 500, 556, 1000, 1000, 278, 611,
+    278, 333, 333, 333, 333, 333, 333, 333, 333, 278, 333, 333, 278, 333, 333, 333,
+    1000, 278, 278, 278, 278, 278, 278, 278, 278, 278, 278, 278, 278, 278, 278, 278,
+    278, 1000, 278, 370, 278, 278, 278, 278, 611, 778, 1000, 365, 278, 278, 278, 278,
+    278, 889, 278, 278, 278, 278, 278, 278, 278, 611, 944, 611, 278, 278, 278, 278,
+  ],
+};
+
+// WinAnsi bytes 0x80-0x9F as Unicode (unassigned bytes as their C1 code).
+const WINANSI_HIGH = '\u20ac\u0081\u201a\u0192\u201e\u2026\u2020\u2021\u02c6\u2030\u0160\u2039\u0152\u008d\u017d\u008f' +
+  '\u0090\u2018\u2019\u201c\u201d\u2022\u2013\u2014\u02dc\u2122\u0161\u203a\u0153\u009d\u017e\u0178';
+
+function winAnsiByte(ch) {
+  const c = ch.codePointAt(0);
+  if (c < 0x80 || (c >= 0xa0 && c <= 0xff)) return c;
+  const i = WINANSI_HIGH.indexOf(ch);
+  return i >= 0 ? 0x80 + i : 0x3f;
+}
+
+// The width of `text` (WinAnsi-safe, see reports.winAnsi) in points, drawn
+// in Helvetica ('regular') or Helvetica-Bold ('bold') at `size` — the
+// server's helvetica_measure, to the last bit: PoDoFo holds the size as a
+// float and scales each character's width by (size * 100f) / 100 / 1000.
+export function helveticaMeasure(font, text, size) {
+  const widths = HELVETICA_WIDTHS[font];
+  const scale = Math.fround(Math.fround(size) * 100) / 100;
+  let w = 0;
+  for (const ch of text) {
+    const b = winAnsiByte(ch);
+    w += ((b >= 0x20 ? widths[b - 0x20] : 278) * scale) / 1000;
+  }
+  return w;
 }
 
 async function embedFonts(doc) {
@@ -353,7 +419,6 @@ export async function buildLabelsPdf(records, spec, opts = {}) {
   const used = recordsFor(records, spec, opts.maxPages || 0);
   const doc = await PDFDocument.create();
   const fonts = await embedFonts(doc);
-  const measure = fontMeasure(fonts);
   const cache = new Map();
   const per = perSheet(spec);
   const pageW = spec.sheet_width_mm * MM_TO_PT;
@@ -365,7 +430,7 @@ export async function buildLabelsPdf(records, spec, opts = {}) {
     const page = doc.addPage([pageW, pageH]);
     for (const slot of pageSlots(spec, Math.min(per, used.length - idx))) {
       const record = used[idx++];
-      const lay = layoutLabel(record, slot.w, slot.h, show, measure);
+      const lay = layoutLabel(record, slot.w, slot.h, show, helveticaMeasure);
       const image = lay.image ? await labelImage(doc, record, show, opts.images, cache, opts.prepareImage) : null;
       drawLabel(page, slot.x, slot.y, lay, fonts, image);
     }
