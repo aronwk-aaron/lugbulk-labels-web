@@ -18,6 +18,7 @@ import * as layout from '../../static/js/layout.js';
 import * as ordering from '../../static/js/ordering.js';
 import * as pivot from '../../static/js/pivot.js';
 import * as records from '../../static/js/records.js';
+import * as spreadsheet from '../../static/js/spreadsheet.js';
 
 const dir = process.env.GOLDEN_DIR;
 const skip = dir ? false : 'GOLDEN_DIR not set (see tests/golden.cpp)';
@@ -27,6 +28,8 @@ const skip = dir ? false : 'GOLDEN_DIR not set (see tests/golden.cpp)';
 const canon = (v) => JSON.parse(JSON.stringify(v));
 const load = (name) => JSON.parse(readFileSync(join(dir, name), 'utf8'));
 const withoutImage = (rs) => rs.map(({ image_url, ...r }) => r);
+
+const fixtures = new URL('../fixtures/', import.meta.url);
 
 const cases = dir ? readdirSync(dir).filter((f) => /^case-.*\.json$/.test(f)).sort() : [];
 
@@ -135,4 +138,24 @@ test('colors, parse_qty, element ids, weights, names, label specs match C++', { 
     u.part_orders.map((o) => ordering.parsePartOrder(o) !== null),
     u.part_orders_valid,
   );
+});
+
+test('spreadsheet reading (.xlsx, .csv) matches C++', { skip }, async () => {
+  const reads = load('spreadsheets.json');
+  const bomb = reads.find((c) => c.file === 'bomb.xlsx');
+  assert.equal(bomb?.error, 'That .xlsx file unpacks to more than 64 MB — too big.');
+  assert.ok(reads.filter((c) => c.file).length >= 4, 'every fixture file is read');
+  assert.ok(reads.filter((c) => c.hex !== undefined).length >= 20, 'the generated inputs are there');
+  for (const c of reads) {
+    const bytes = c.file ? readFileSync(new URL(c.file, fixtures)) : Buffer.from(c.hex, 'hex');
+    let got;
+    try {
+      got = { tabs: await spreadsheet.readTabs(bytes, layout.SOURCE_TAB) };
+    } catch (e) {
+      if (!(e instanceof spreadsheet.SpreadsheetError)) throw e;
+      got = { error: e.message };
+    }
+    const want = 'error' in c ? { error: c.error } : { tabs: c.tabs };
+    assert.deepEqual(got, want, c.name);
+  }
 });

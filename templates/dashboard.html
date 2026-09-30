@@ -299,7 +299,11 @@
   <a href="https://github.com/aronwk-aaron/lugbulk-labels-web">Source code</a> (AGPL-3.0)
 </footer>
 
-<script nonce="{{nonce}}">
+<script type="module" nonce="{{nonce}}">
+// The page's script is a module so it can use the browser-side code in
+// /static/js/ (the CSP allows same-origin scripts beside this nonce).
+import { loadSheet } from '/static/js/load.js';
+
 function el(tag, props, children) {
   const e = document.createElement(tag);
   if (props) for (const [k, v] of Object.entries(props)) {
@@ -484,7 +488,8 @@ const stockCombo = (() => {
 // of the sheet's own labels.
 //
 // `ws` is what's open: { kind: 'upload', file, name } or
-// { kind: 'sheet', sheet, name }. Uploads keep their design in this
+// { kind: 'sheet', sheet, name }, plus `loaded` once it has been read
+// ({records, issues, summary}, see runCheck). Uploads keep their design in this
 // browser; a saved sheet's design is stored with the sheet on the server
 // (shared by everyone who has it saved).
 let ws = null;
@@ -607,6 +612,10 @@ $('test-page-btn').addEventListener('click', async () => {
 });
 
 // --- Check (summary + issues) ---
+// The sheet is read and checked here in the browser (static/js/load.js):
+// an uploaded file is parsed on this page, a saved sheet's cells come from
+// GET /sheets/<id>/values. What was read stays in `ws.loaded`
+// ({records, issues, summary}) for the page to use.
 async function runCheck() {
   const summary = $('ws-summary');
   const box = $('ws-issues-box');
@@ -614,11 +623,10 @@ async function runCheck() {
   box.hidden = true;
   const opened = ws;
   try {
-    const res = ws.kind === 'sheet' ? await api(wsBase() + '/check')
-                                    : await wsRequest('/upload/check');
-    if (!res.ok) throw new Error(await res.text());
-    const data = await res.json();
+    const loaded = await loadSheet(ws.kind === 'sheet' ? { rowId: ws.sheet.row_id } : ws.file, { fetch: api });
     if (ws !== opened) return false;
+    ws.loaded = loaded;
+    const data = loaded.summary;
     const plural = (n, word) => n + ' ' + word + (n === 1 ? '' : 's');
     summary.textContent = plural(data.labels, 'label') + ' · ' + plural(data.people, 'person').replace('persons', 'people') +
       ' · ' + plural(data.parts, 'part');
@@ -631,9 +639,16 @@ async function runCheck() {
       for (const issue of data.issues) list.appendChild(el('li', { text: 'Row ' + issue.row + ': ' + issue.detail }));
       box.hidden = false;
     }
+    if (loaded.lookupError) {
+      summary.appendChild(el('span', { class: 'muted',
+        text: ' · no BrickLink data this time (' + loaded.lookupError + ')' }));
+    }
     return data.labels > 0;
   } catch (e) {
-    if (ws === opened) setText(summary, e.message || 'Could not read the sheet — try again.', true);
+    if (ws === opened) {
+      ws.loaded = null;
+      setText(summary, (e && e.message) || 'Could not read the sheet — try again.', true);
+    }
     return false;
   }
 }
@@ -667,7 +682,7 @@ async function openWorkspace(source) {
   const panel = $('workspace');
   panel.hidden = false;
   panel.scrollIntoView({ behavior: 'smooth', block: 'start' });
-  // Check first: for a saved sheet it also reads the sheet the preview uses.
+  // Read and check the sheet first; the preview only once it has labels.
   if (await runCheck()) renderPreview();
 }
 $('ws-close').addEventListener('click', () => {
