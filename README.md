@@ -52,10 +52,10 @@ can still open sheets already in their list.
   Labels, Checklist and Parts list downloads follow it. An **alignment
   test page** prints the stock's outlines on plain paper to check the
   printer first.
-- **Download selected** — one `.zip` with the files you tick: labels,
-  packing checklist, parts list and lot counts (PDF and CSV) and the sheet
-  check, for a saved sheet or an upload. The reports and the zip are made
-  in the browser (only the labels PDF comes from the server).
+- **Download** — tick the files you want: labels, packing checklist, parts
+  list and lot counts (PDF and CSV) and the sheet check. One file downloads
+  as it is; several come in one `.zip`. The reports and the zip are made in
+  the browser (only the labels PDF comes from the server).
 - **Report tabs** — Labels · Packing checklist · Parts list · Lot counts,
   each with its own settings and a live preview made in the browser. Every
   report can have its own title and subtitle line, US Letter or A4,

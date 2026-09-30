@@ -289,28 +289,12 @@
 
       <div class="panel">
         <h3><span class="step">2</span>Download</h3>
-        <div class="stack">
-          <button type="button" class="primary big" id="dl-labels">Download labels (PDF)</button>
-        </div>
-        <h4>Or one report</h4>
-        <div class="actions">
-          <button type="button" id="dl-checklist">Packing checklist</button>
-          <button type="button" id="dl-parts">Parts list</button>
-          <button type="button" id="dl-lots">Lot counts</button>
-          <label class="inline-field">as
-            <select id="report-format">
-              <option value="pdf">PDF</option>
-              <option value="csv">CSV</option>
-            </select>
-          </label>
-        </div>
-        <p class="note" style="margin:0.4rem 0 0">Reports use the settings on their tabs and are made
-          right here in your browser.</p>
-        <h4>Several at once</h4>
-        <div class="switches" id="zip-files" role="group" aria-label="Files in the zip"></div>
+        <p class="note">Tick what you want. One file downloads as it is; several come in one .zip.
+          Everything is made with the settings on its tab.</p>
+        <div class="switches" id="zip-files" role="group" aria-label="Files to download"></div>
         <p class="status muted" id="zip-status"></p>
         <div class="stack" style="margin-top:0.6rem">
-          <button type="button" class="big" id="dl-zip">Download selected (.zip)</button>
+          <button type="button" class="primary big" id="dl-zip">Download</button>
         </div>
         <p class="status muted" id="dl-status"></p>
       </div>
@@ -365,17 +349,6 @@ async function api(path, opts) {
   return res;
 }
 
-// Remembers the option pickers across visits (per browser only).
-for (const id of ['report-format']) {
-  const select = document.getElementById(id);
-  try {
-    const saved = localStorage.getItem('lugbulk.' + id);
-    if (saved && [...select.options].some(o => o.value === saved)) select.value = saved;
-  } catch (e) { /* storage unavailable: defaults are fine */ }
-  select.addEventListener('change', () => {
-    try { localStorage.setItem('lugbulk.' + id, select.value); } catch (e) {}
-  });
-}
 const opt = (id) => document.getElementById(id).value;
 
 // Color theme: Auto (follow the system) → Light → Dark, remembered per browser.
@@ -690,9 +663,12 @@ function showOptions(o) {
   updateZipButton();
 }
 function updateZipButton() {
-  const none = !reportOptions.ZIP_FILES.some(([id]) => $('zip-' + id).checked);
-  $('dl-zip').disabled = none;
-  $('dl-zip').title = none ? 'Tick at least one file' : '';
+  const chosen = reportOptions.ZIP_FILES.filter(([id]) => $('zip-' + id).checked);
+  const btn = $('dl-zip');
+  btn.disabled = !chosen.length;
+  btn.textContent = !chosen.length ? 'Tick something to download'
+    : chosen.length === 1 ? 'Download ' + chosen[0][1]
+    : 'Download ' + chosen.length + ' files (.zip)';
 }
 
 const UPLOAD_OPTIONS_KEY = 'lugbulk.uploadReportOptions';
@@ -1028,7 +1004,7 @@ async function responseError(res) {
   const text = await res.text().catch(() => '');
   return new Error(text || ('Request failed (' + res.status + ') — try again.'));
 }
-const dlButtons = ['dl-labels', 'dl-zip', 'dl-checklist', 'dl-parts', 'dl-lots'].map($);
+const dlButtons = [$('dl-zip')];
 const stemOf = (w) => reports.fileStem(w.name, w.kind === 'upload');
 const REPORT_FILES = { checklist: ' packing checklist', parts: ' parts', lots: ' lot counts' };
 
@@ -1085,23 +1061,8 @@ async function reportFile(kind, format, loaded, opened, status) {
   return { name, data, type: 'application/pdf' };
 }
 
-$('dl-labels').addEventListener('click', () => download('Making your labels… (can take a minute)', async (opened) => {
-  saveBlob(new Blob([await labelsPdf()], { type: 'application/pdf' }), stemOf(opened) + ' labels.pdf');
-}));
-
-for (const kind of Object.keys(REPORT_FILES)) {
-  $('dl-' + kind).addEventListener('click', () => download('Making the ' + REPORTS[kind].name.toLowerCase() + '…', async (opened, status) => {
-    const loaded = await freshSheet(opened, status);
-    // The packing checklist is a PDF only.
-    const format = kind === 'checklist' ? 'pdf' : opt('report-format');
-    setText(status, 'Making the ' + REPORTS[kind].name.toLowerCase() + '…');
-    const file = await reportFile(kind, format, loaded, opened, status);
-    saveBlob(new Blob([file.data], { type: file.type }), file.name);
-  }));
-}
-
-// "Download selected": the ticked files in one .zip, made here. Only the
-// labels PDF is fetched from the server.
+// "Download": the ticked files, made here — one file as itself, several
+// in one .zip. Only the labels PDF is fetched from the server.
 $('dl-zip').addEventListener('click', () => download('Reading the sheet…', async (opened, status) => {
   const chosen = reportOptions.zipSelection(opened.options);
   if (!chosen.length) throw new Error('Tick at least one file to put in the zip.');
@@ -1121,6 +1082,13 @@ $('dl-zip').addEventListener('click', () => download('Reading the sheet…', asy
       files.push([file.name, file.data]);
     }
     if (ws !== opened) return;
+  }
+  if (files.length === 1) {
+    const [name, data] = files[0];
+    const type = name.endsWith('.pdf') ? 'application/pdf'
+      : name.endsWith('.csv') ? 'text/csv;charset=utf-8' : 'text/plain;charset=utf-8';
+    saveBlob(new Blob([data], { type }), name);
+    return;
   }
   setText(status, 'Packing the zip…');
   saveBlob(new Blob([zip(files)], { type: 'application/zip' }), stem + ' labels and reports.zip');
