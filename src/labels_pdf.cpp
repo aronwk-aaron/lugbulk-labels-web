@@ -181,15 +181,6 @@ double string_width_at(PoDoFo::PdfFont* font, const std::string& winansi_text, d
     return font->GetFontMetrics()->StringWidth(winansi_text.c_str());
 }
 
-// fit_text for `utf8_text` (converted to WinAnsi here) in `font`.
-FittedText fit_string(PoDoFo::PdfFont* font, const std::string& utf8_text, double max_size,
-                      double min_size, double max_width_pt, double max_height_pt) {
-    return fit_text(pdf_text::to_winansi(utf8_text), max_size, min_size, max_width_pt,
-                    max_height_pt, [font](const std::string& t, double size) {
-                        return string_width_at(font, t, size);
-                    });
-}
-
 // Helvetica's cap height and descender, as fractions of the font size, and
 // the baseline-to-baseline distance of wrapped lines.
 constexpr double kCapHeight = 0.72;
@@ -308,36 +299,29 @@ void draw_qr(PoDoFo::PdfPainter& painter, double x, double y, double size, const
     painter.Fill();
 }
 
-void draw_label(PoDoFo::PdfPainter& painter, PoDoFo::PdfStreamedDocument& doc, double origin_x,
-                double origin_y, double width, double height, const LabelRecord& record,
-                const LabelOptions& opts, const std::string& cache_dir, const Fonts& fonts,
-                std::map<std::string, std::unique_ptr<PoDoFo::PdfImage>>& image_cache) {
-    // PoDoFo draws in absolute page coordinates (origin bottom-left), so
-    // every position below is origin + label-local offset.
-    auto X = [&](double local_x) { return origin_x + local_x; };
-    auto Y = [&](double local_y) { return origin_y + local_y; };
+}  // namespace
+
+LabelDrawing layout_label(const LabelRecord& record, double width, double height,
+                          const LabelOptions& opts, const MeasureFn& measure) {
+    auto regular = [&](const std::string& t, double size) { return measure(false, t, size); };
+    auto bold = [&](const std::string& t, double size) { return measure(true, t, size); };
+    LabelDrawing out;
+    auto draw = [&](bool is_bold, double size, double x, double y, const std::string& text) {
+        out.texts.push_back({is_bold, size, x, y, text});
+    };
 
     std::vector<std::string> color_lines;
     if (opts.show(LabelPart::kLegoColor) && !record.lego_color.empty())
-        color_lines.push_back("LEGO: " + record.lego_color);
+        color_lines.push_back(pdf_text::to_winansi("LEGO: " + record.lego_color));
     if (opts.show(LabelPart::kBlColor) && !record.bl_color.empty())
-        color_lines.push_back("BL: " + record.bl_color);
+        color_lines.push_back(pdf_text::to_winansi("BL: " + record.bl_color));
     std::vector<std::string> texts = color_lines;
     if (opts.show(LabelPart::kDescription) && !record.description.empty())
-        texts.push_back(record.description);
+        texts.push_back(pdf_text::to_winansi(record.description));
     const Layout L = compute_layout(width, height, opts, static_cast<int>(texts.size()));
 
-    if (L.img > 0) {
-        if (PoDoFo::PdfImage* img = label_image(doc, record, cache_dir,
-                                                opts.show(LabelPart::kBackdrop), image_cache)) {
-            painter.DrawImage(X(L.pad), Y(height - L.pad - L.img), img, L.img / img->GetWidth(),
-                              L.img / img->GetHeight());
-        }
-    }
-    if (L.qr > 0) {
-        draw_qr(painter, X(width - L.pad - L.qr), Y(height - L.pad - L.qr), L.qr,
-                bricklink_url(record.element_id));
-    }
+    if (L.img > 0) out.image = LabelDrawing::Square{L.pad, height - L.pad - L.img, L.img};
+    if (L.qr > 0) out.qr = LabelDrawing::Square{width - L.pad - L.qr, height - L.pad - L.qr, L.qr};
 
     const double text_x = L.text_x, right = L.text_right, text_max = right - text_x;
 
@@ -346,8 +330,8 @@ void draw_label(PoDoFo::PdfPainter& painter, PoDoFo::PdfStreamedDocument& doc, d
     std::string id_text = opts.show(LabelPart::kElementId) ? pdf_text::to_winansi(record.element_id) : "";
     std::string qty_text = opts.show(LabelPart::kQty) ? pdf_text::to_winansi("Qty: " + record.qty) : "";
     auto row_width = [&](double k) {
-        return (id_text.empty() ? 0 : string_width_at(fonts.bold, id_text, L.id_size * k)) +
-               (qty_text.empty() ? 0 : string_width_at(fonts.bold, qty_text, L.id_size * 0.85 * k)) +
+        return (id_text.empty() ? 0 : bold(id_text, L.id_size * k)) +
+               (qty_text.empty() ? 0 : bold(qty_text, L.id_size * 0.85 * k)) +
                (!id_text.empty() && !qty_text.empty() ? L.pad : 0);
     };
     double scale = 1.0;
@@ -356,10 +340,9 @@ void draw_label(PoDoFo::PdfPainter& painter, PoDoFo::PdfStreamedDocument& doc, d
     while (scale > 0.01 && row_width(scale) > text_max) scale *= 0.9;
     if (!qty_text.empty()) {
         double size = L.id_size * 0.85 * scale;
-        double w = string_width_at(fonts.bold, qty_text, size);
-        draw_text(painter, fonts.bold, size, X(right - w), Y(L.y_id), qty_text);
+        draw(true, size, right - bold(qty_text, size), L.y_id, qty_text);
     }
-    if (!id_text.empty()) draw_text(painter, fonts.bold, L.id_size * scale, X(text_x), Y(L.y_id), id_text);
+    if (!id_text.empty()) draw(true, L.id_size * scale, text_x, L.y_id, id_text);
 
     // Swatch: a square of the part's color beside the color name lines.
     double swatch_w = 0;
@@ -368,18 +351,8 @@ void draw_label(PoDoFo::PdfPainter& painter, PoDoFo::PdfStreamedDocument& doc, d
     if (rgb && !color_lines.empty()) {
         double side = L.small * 1.2 * (color_lines.size() - 1) + L.small * 0.95;
         double bottom = L.lines[color_lines.size() - 1] - L.small * 0.22;
-        painter.SetColor((*rgb)[0], (*rgb)[1], (*rgb)[2]);
-        painter.Rectangle(X(text_x), Y(bottom), side, side);
-        painter.Fill();
-        painter.SetStrokingColor(0.35, 0.35, 0.35);
-        painter.SetStrokeWidth(0.5);
-        painter.Rectangle(X(text_x), Y(bottom), side, side);
-        painter.Stroke();
-        if (colors::is_transparent(record.lego_color, record.bl_color)) {
-            // Mark see-through colors with a diagonal, like a pane of glass.
-            painter.DrawLine(X(text_x), Y(bottom), X(text_x + side), Y(bottom + side));
-        }
-        painter.SetColor(0, 0, 0);
+        out.swatch = LabelDrawing::Swatch{text_x, bottom, side, {(*rgb)[0], (*rgb)[1], (*rgb)[2]},
+                                          colors::is_transparent(record.lego_color, record.bl_color)};
         swatch_w = side + L.pad * 0.5;
     }
 
@@ -395,15 +368,14 @@ void draw_label(PoDoFo::PdfPainter& painter, PoDoFo::PdfStreamedDocument& doc, d
             double limit = name_row ? L.y_name + L.name_size * 0.75 + L.small * 0.15 : L.pad;
             bottom = std::min(bottom, limit);
         }
-        FittedText fit = fit_string(fonts.regular, texts[i], L.small, L.small * 0.7, right - x,
-                                    top - bottom);
+        FittedText fit = fit_text(texts[i], L.small, L.small * 0.7, right - x, top - bottom, regular);
         if (fit.lines.size() == 1) {
-            draw_text(painter, fonts.regular, fit.size, X(x), Y(L.lines[i]), fit.lines[0]);
+            draw(false, fit.size, x, L.lines[i], fit.lines[0]);
             continue;
         }
         double baseline = top - fit.size * kCapHeight;
         for (const auto& line : fit.lines) {
-            draw_text(painter, fonts.regular, fit.size, X(x), Y(baseline), line);
+            draw(false, fit.size, x, baseline, line);
             baseline -= fit.leading;
         }
     }
@@ -412,8 +384,8 @@ void draw_label(PoDoFo::PdfPainter& painter, PoDoFo::PdfStreamedDocument& doc, d
     if (opts.show(LabelPart::kCount) && record.part_total > 0) {
         std::string counter = std::to_string(record.part_seq) + " of " +
                               std::to_string(record.part_total);
-        counter_w = string_width_at(fonts.bold, counter, L.small);
-        draw_text(painter, fonts.bold, L.small, X(width - L.pad - counter_w), Y(L.y_name), counter);
+        counter_w = bold(counter, L.small);
+        draw(true, L.small, width - L.pad - counter_w, L.y_name, counter);
     }
 
     if (opts.show(LabelPart::kName)) {
@@ -423,14 +395,67 @@ void draw_label(PoDoFo::PdfPainter& painter, PoDoFo::PdfStreamedDocument& doc, d
         // A name too long for one line wraps within the name row: from its
         // usual cap height down to half the bottom padding.
         double top = L.y_name + L.name_size * kCapHeight;
-        FittedText fit = fit_string(fonts.bold, record.person, L.name_size, L.name_size * 0.55,
-                                    name_max, top - L.pad * 0.5);
+        FittedText fit = fit_text(pdf_text::to_winansi(record.person), L.name_size,
+                                  L.name_size * 0.55, name_max, top - L.pad * 0.5, bold);
         double baseline = fit.lines.size() == 1 ? L.y_name : top - fit.size * kCapHeight;
         for (const auto& line : fit.lines) {
-            double name_w = string_width_at(fonts.bold, line, fit.size);
-            draw_text(painter, fonts.bold, fit.size, X((width - name_w) / 2), Y(baseline), line);
+            draw(true, fit.size, (width - bold(line, fit.size)) / 2, baseline, line);
             baseline -= fit.leading;
         }
+    }
+    return out;
+}
+
+MeasureFn helvetica_measure() {
+    auto doc = std::make_shared<PoDoFo::PdfMemDocument>();
+    PoDoFo::PdfFont* regular = doc->CreateFont("Helvetica");
+    PoDoFo::PdfFont* bold = doc->CreateFont("Helvetica-Bold");
+    if (!regular || !bold) throw std::runtime_error("pdf error: could not load base fonts");
+    return [doc, regular, bold](bool is_bold, const std::string& t, double size) {
+        return string_width_at(is_bold ? bold : regular, t, size);
+    };
+}
+
+namespace {
+
+void draw_label(PoDoFo::PdfPainter& painter, PoDoFo::PdfStreamedDocument& doc, double origin_x,
+                double origin_y, double width, double height, const LabelRecord& record,
+                const LabelOptions& opts, const std::string& cache_dir, const Fonts& fonts,
+                std::map<std::string, std::unique_ptr<PoDoFo::PdfImage>>& image_cache) {
+    // PoDoFo draws in absolute page coordinates (origin bottom-left), so
+    // every position below is origin + label-local offset.
+    auto X = [&](double local_x) { return origin_x + local_x; };
+    auto Y = [&](double local_y) { return origin_y + local_y; };
+    const LabelDrawing d = layout_label(
+        record, width, height, opts, [&fonts](bool is_bold, const std::string& t, double size) {
+            return string_width_at(is_bold ? fonts.bold : fonts.regular, t, size);
+        });
+
+    if (d.image) {
+        if (PoDoFo::PdfImage* img = label_image(doc, record, cache_dir,
+                                                opts.show(LabelPart::kBackdrop), image_cache)) {
+            painter.DrawImage(X(d.image->x), Y(d.image->y), img, d.image->size / img->GetWidth(),
+                              d.image->size / img->GetHeight());
+        }
+    }
+    if (d.qr) draw_qr(painter, X(d.qr->x), Y(d.qr->y), d.qr->size, bricklink_url(record.element_id));
+    if (d.swatch) {
+        const auto& s = *d.swatch;
+        painter.SetColor(s.rgb[0], s.rgb[1], s.rgb[2]);
+        painter.Rectangle(X(s.x), Y(s.y), s.side, s.side);
+        painter.Fill();
+        painter.SetStrokingColor(0.35, 0.35, 0.35);
+        painter.SetStrokeWidth(0.5);
+        painter.Rectangle(X(s.x), Y(s.y), s.side, s.side);
+        painter.Stroke();
+        if (s.trans) {
+            // Mark see-through colors with a diagonal, like a pane of glass.
+            painter.DrawLine(X(s.x), Y(s.y), X(s.x + s.side), Y(s.y + s.side));
+        }
+        painter.SetColor(0, 0, 0);
+    }
+    for (const auto& t : d.texts) {
+        draw_text(painter, t.bold ? fonts.bold : fonts.regular, t.size, X(t.x), Y(t.y), t.text);
     }
 }
 

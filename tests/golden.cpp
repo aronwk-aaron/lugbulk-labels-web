@@ -32,6 +32,9 @@
 
 #include "bricklink.h"
 #include "colors.h"
+#include "image_backdrop.h"
+#include "labels_pdf.h"
+#include "qrcodegen.hpp"
 #include "ordering.h"
 #include "records.h"
 #include "reports.h"
@@ -661,6 +664,181 @@ std::string spreadsheets_json(const std::vector<std::filesystem::path>& fixtures
     return jarr(cases, [](const std::string& s) { return s; });
 }
 
+
+// ---- labels.json ------------------------------------------------------------
+// The label layout (labels_pdf::layout_label) for invented records on
+// several stocks and designs, QR matrices, and the image backdrop on
+// synthetic photos: static/js/labels.js and backdrop.js must match.
+
+// WinAnsi (Latin-1 for the text used here) back to UTF-8, for JSON.
+std::string winansi_to_utf8(const std::string& s) {
+    std::string out;
+    for (unsigned char c : s) {
+        if (c < 0x80) {
+            out.push_back(static_cast<char>(c));
+        } else {
+            out.push_back(static_cast<char>(0xC0 | (c >> 6)));
+            out.push_back(static_cast<char>(0x80 | (c & 0x3F)));
+        }
+    }
+    return out;
+}
+
+LabelRecord label_record(const std::string& person, const std::string& id, const std::string& desc,
+                         const std::string& lego, const std::string& bl, const std::string& qty,
+                         int seq, int total) {
+    LabelRecord r;
+    r.person = person;
+    r.element_id = id;
+    r.description = desc;
+    r.lego_color = lego;
+    r.bl_color = bl;
+    r.qty = qty;
+    r.part_seq = seq;
+    r.part_total = total;
+    return r;
+}
+
+std::vector<LabelRecord> label_records() {
+    return {
+        label_record("Alex Example", "6225242", "BRICK 1X1X1 2/3 W/2 KNOBS", "Medium Stone Grey",
+                     "Light Bluish Gray", "150", 3, 10),
+        label_record("Robin Invented", "300121", "BRICK 2X2", "Bright Red", "Red", "2000", 1, 1),
+        label_record("Sam Placeholder", "4211395", "PLATE 1X2", "Transparent", "Trans-Clear", "25",
+                     2, 4),
+        label_record("Jo", "302001", "", "White", "White", "5", 0, 0),
+        label_record("Chris Madeup-Longername Withmany Words In It Too", "6346535",
+                     "FLAT TILE 1X2 WITH A VERY LONG MADE UP DESCRIPTION THAT GOES ON AND ON "
+                     "AND NEEDS TO WRAP ONTO SEVERAL LINES WITHOUT BEING CUT OFF",
+                     "Transparent Fluorescent Reddish Orange", "Trans-Neon Orange", "123456", 12,
+                     345),
+        label_record("Zo\xc3\xab Fict\xc3\xadcia", "6000001",
+                     "SUPERCALIFRAGILISTICEXPIALIDOCIOUSPARTNAMEWITHNOSPACESATALLFORTESTING",
+                     "Weird Pink", "", "7", 1, 2),
+        label_record("", "6000002", "PLATE 1X1 ROUND", "", "Some BL Color", "", 0, 0),
+    };
+}
+
+std::string label_layout_json(const labels_pdf::LabelDrawing& d) {
+    auto square = [](const std::optional<labels_pdf::LabelDrawing::Square>& s) {
+        return s ? "{\"x\":" + jnum(s->x) + ",\"y\":" + jnum(s->y) + ",\"size\":" + jnum(s->size) + "}"
+                 : std::string("null");
+    };
+    std::string swatch = "null";
+    if (d.swatch) {
+        swatch = "{\"x\":" + jnum(d.swatch->x) + ",\"y\":" + jnum(d.swatch->y) +
+                 ",\"side\":" + jnum(d.swatch->side) + ",\"rgb\":[" + jnum(d.swatch->rgb[0]) + "," +
+                 jnum(d.swatch->rgb[1]) + "," + jnum(d.swatch->rgb[2]) +
+                 "],\"trans\":" + jbool(d.swatch->trans) + "}";
+    }
+    return "{\"image\":" + square(d.image) + ",\"qr\":" + square(d.qr) + ",\"swatch\":" + swatch +
+           ",\"texts\":" + jarr(d.texts, [](const labels_pdf::LaidText& t) {
+               return "{\"font\":" + jstr(t.bold ? "bold" : "regular") + ",\"size\":" + jnum(t.size) +
+                      ",\"x\":" + jnum(t.x) + ",\"y\":" + jnum(t.y) +
+                      ",\"text\":" + jstr(winansi_to_utf8(t.text)) + "}";
+           }) + "}";
+}
+
+std::string qr_json(const std::string& text) {
+    auto qr = qrcodegen::QrCode::encodeText(text.c_str(), qrcodegen::QrCode::Ecc::MEDIUM);
+    std::vector<std::string> rows;
+    for (int y = 0; y < qr.getSize(); ++y) {
+        std::string row;
+        for (int x = 0; x < qr.getSize(); ++x) row.push_back(qr.getModule(x, y) ? '1' : '0');
+        rows.push_back(row);
+    }
+    return "{\"text\":" + jstr(text) + ",\"rows\":" + jarr(rows, jstr) + "}";
+}
+
+// A synthetic product photo, w x h, on pure white: `kind` 0 = a mid-gray
+// block with shading, 1 = a faint (near-white) block with an edge and a
+// hole, 2 = a dark block with a white speck, 3 = gradient noise.
+image_backdrop::RgbImage synthetic_photo(int w, int h, int kind) {
+    image_backdrop::RgbImage img{w, h, std::vector<uint8_t>(static_cast<size_t>(w) * h * 3, 255)};
+    uint32_t seed = 12345u + static_cast<uint32_t>(kind);
+    auto rnd = [&seed]() {
+        seed = seed * 1103515245u + 12345u;
+        return static_cast<int>((seed >> 16) & 0x7fff);
+    };
+    for (int y = 0; y < h; ++y) {
+        for (int x = 0; x < w; ++x) {
+            uint8_t* p = &img.pixels[(static_cast<size_t>(y) * w + x) * 3];
+            bool inside = x >= w / 5 && x < w * 4 / 5 && y >= h / 4 && y < h * 3 / 4;
+            int v = 255;
+            if (kind == 0 && inside) v = 120 + (x + y) % 40;
+            if (kind == 1 && inside) {
+                bool edge = x == w / 5 || y == h / 4 || x == w * 4 / 5 - 1 || y == h * 3 / 4 - 1;
+                bool hole = x >= w * 2 / 5 && x < w * 3 / 5 && y >= h * 2 / 5 && y < h * 3 / 5;
+                v = hole ? 255 : edge ? 170 : 236 + rnd() % 10;
+            }
+            if (kind == 2) v = inside ? 40 + rnd() % 20 : (x == 2 && y == 2 ? 200 : 255);
+            if (kind == 3) v = std::min(255, 200 + (x * 3 + y * 2) % 56 + rnd() % 4);
+            p[0] = static_cast<uint8_t>(v);
+            p[1] = static_cast<uint8_t>(std::min(255, v + (kind == 0 ? 5 : 0)));
+            p[2] = static_cast<uint8_t>(std::max(0, v - (kind == 3 ? 3 : 0)));
+        }
+    }
+    return img;
+}
+
+std::string backdrop_json() {
+    std::vector<std::string> cases;
+    const int kinds[][4] = {
+        // w, h, kind, flags (1 = trans, 2 = light)
+        {24, 20, 0, 2}, {24, 20, 0, 0}, {30, 30, 1, 0}, {30, 30, 1, 2}, {16, 16, 2, 0},
+        {16, 16, 2, 2}, {20, 24, 3, 1}, {20, 24, 0, 1}, {40, 36, 1, 2},
+    };
+    for (const auto& k : kinds) {
+        auto img = synthetic_photo(k[0], k[1], k[2]);
+        bool trans = k[3] & 1, light = k[3] & 2;
+        auto out = image_backdrop::backdrop(img, trans, light);
+        std::string in(img.pixels.begin(), img.pixels.end());
+        std::string result = "null";
+        if (out) {
+            std::string px(out->pixels.begin(), out->pixels.end());
+            result = "{\"width\":" + std::to_string(out->width) + ",\"height\":" +
+                     std::to_string(out->height) + ",\"pixels\":" + jstr(hex(px)) + "}";
+        }
+        cases.push_back("{\"width\":" + std::to_string(img.width) + ",\"height\":" +
+                        std::to_string(img.height) + ",\"trans\":" + jbool(trans) +
+                        ",\"light\":" + jbool(light) + ",\"pixels\":" + jstr(hex(in)) +
+                        ",\"out\":" + result + "}");
+    }
+    return jarr(cases, [](const std::string& c) { return c; });
+}
+
+std::string labels_json() {
+    const auto records = label_records();
+    const auto measure = labels_pdf::helvetica_measure();
+    const char* const specs[] = {"avery5162", "avery5160", "avery5163", "avery5395", "dymo30252",
+                                 "dymo30334", "dymo99014", "averyl4770"};
+    const char* const designs[] = {"qr", "", "photo", "photo,qr,swatch", "element_id,qty",
+                                   "name,count", "lego_color,bl_color,description",
+                                   "photo,element_id,qty,lego_color,bl_color,description,name,count,backdrop,swatch,qr"};
+    std::vector<std::string> cases;
+    for (const char* spec_id : specs) {
+        const layout::LabelSpec* spec = layout::find_label_spec(spec_id);
+        if (!spec) throw std::runtime_error(std::string("no label spec ") + spec_id);
+        const double w = spec->label_width_mm * 72.0 / 25.4, h = spec->label_height_mm * 72.0 / 25.4;
+        for (const char* hidden : designs) {
+            std::string err;
+            auto opts = labels_pdf::LabelOptions::from_hidden(hidden, &err);
+            if (!opts) throw std::runtime_error(err);
+            for (size_t i = 0; i < records.size(); ++i) {
+                auto d = labels_pdf::layout_label(records[i], w, h, *opts, measure);
+                cases.push_back("{\"spec\":" + jstr(spec_id) + ",\"hidden\":" + jstr(hidden) +
+                                ",\"record\":" + std::to_string(i) + ",\"width\":" + jnum(w) +
+                                ",\"height\":" + jnum(h) + ",\"layout\":" + label_layout_json(d) + "}");
+            }
+        }
+    }
+    std::vector<std::string> qr_texts;
+    for (const auto& r : records) qr_texts.push_back(labels_pdf::bricklink_url(r.element_id));
+    qr_texts.push_back(labels_pdf::bricklink_url("1234567890123456789012"));
+    return "{\"records\":" + jarr(records, record_json) + ",\"cases\":" +
+           jarr(cases, [](const std::string& c) { return c; }) +
+           ",\"qr\":" + jarr(qr_texts, qr_json) + ",\"backdrop\":" + backdrop_json() + "}";
+}
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -702,6 +880,7 @@ int main(int argc, char** argv) {
         write_file(dir + "/case-generated-report-edges.json", case_json(report_edge_cases()));
         write_file(dir + "/case-generated-no-tabs.json", case_json({}));
         write_file(dir + "/units.json", units_json());
+        write_file(dir + "/labels.json", labels_json());
         write_file(dir + "/spreadsheets.json", spreadsheets_json(fixtures));
         if (cases == 0) throw std::runtime_error("no fixtures found in " LUGBULK_FIXTURES);
     } catch (const std::exception& e) {

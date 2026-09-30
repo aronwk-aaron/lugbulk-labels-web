@@ -24,6 +24,11 @@
 //   GET    /preview             one page of sample labels (?spec=&order=&hide=)
 //   POST   /sheets/:id/preview  the first page of the sheet's own labels (?spec=&order=&hide=)
 //   GET    /test-page           printer alignment page for a stock (?spec=)
+//   POST   /sheets/:id/runs     log a download made in the browser: {"report_type","item_count"}
+//
+// The dashboard no longer calls /upload/*, /sheets/:id/{preview,labels,all},
+// the report routes or /test-page: it builds every file in the browser.
+// Those routes stay for CI's end-to-end checks and other clients.
 //
 // For the browser-side renderer (report generation is moving client-side):
 //   GET    /img/:element_id.jpg a LEGO element photo, via the shared image cache
@@ -131,6 +136,9 @@ struct Guards {
     limits::RateLimiter jobs_per_user{6, 1.0 / 120};
     // Live design preview and alignment test page, per user: 20, then 1/second.
     limits::RateLimiter preview_per_user{20, 1};
+    // Downloads made in the browser, logged (POST /sheets/:id/runs), per
+    // user: 20, then one every 3 seconds.
+    limits::RateLimiter runs_per_user{20, 1.0 / 3};
     // Part photos (/img/), per visitor, instead of per_ip above: rendering
     // a sheet in the browser asks for one photo per distinct part at once
     // (a big order sheet has a few hundred), so a burst of 300 lets a whole
@@ -264,7 +272,15 @@ std::string csp_for(const std::string& nonce, bool google_picker = false) {
         script += " https://apis.google.com";
         frames += " https://docs.google.com";
     }
-    return "default-src 'self'; script-src " + script + "; style-src 'self' 'unsafe-inline'; "
+    // worker-src: the labels Web Worker (static/js/labels_worker.js), a
+    // same-origin module worker. Without worker-src the browser falls back
+    // to script-src (then default-src), which would already allow 'self';
+    // it's spelled out so the worker doesn't depend on that fallback, and
+    // so a page with no nonce allows no workers either. blob:/data: workers
+    // are not allowed.
+    std::string workers = nonce.empty() ? "'none'" : "'self'";
+    return "default-src 'self'; script-src " + script + "; worker-src " + workers +
+           "; style-src 'self' 'unsafe-inline'; "
            "img-src 'self' data:; frame-src " + frames + "; object-src 'none'; "
            "frame-ancestors 'none'; base-uri 'none'; form-action 'self'";
 }
@@ -1181,6 +1197,38 @@ int main() {
         return res;
     });
 
+    // Logs a download the browser made itself (labels and reports are
+    // generated client-side now), so the sheet's "Last download" line stays
+    // right: {"report_type": one of the runs table's CHECK list,
+    // "item_count": 0..1000000}. Owner only; rate-limited per user. It
+    // records only the kind of download and a count, never the file.
+    CROW_ROUTE(app, "/sheets/<int>/runs").methods(crow::HTTPMethod::Post)(
+        [&db](const crow::request& req, int64_t row_id) {
+            auto user = current_user(*db, req);
+            if (!user) return crow::response(401, "not logged in");
+            auto owned = db->find_owned_sheet(user->id, row_id);
+            if (!owned) return crow::response(404, "sheet not found");
+            if (auto retry = g_guards->runs_per_user.take(std::to_string(user->id))) {
+                return too_many(*retry, "Too many downloads logged — wait a moment.");
+            }
+            static const std::set<std::string> kReportTypes{"labels", "lot_counts", "parts",
+                                                            "checklist", "bundle"};
+            if (req.body.size() > 1024) return crow::response(413, "too large");
+            auto json = crow::json::load(req.body);
+            if (!json || json.t() != crow::json::type::Object || !has_string(json, "report_type") ||
+                !json.has("item_count") || json["item_count"].t() != crow::json::type::Number) {
+                return crow::response(400, R"(expected {"report_type":"...", "item_count":n})");
+            }
+            std::string report_type = json["report_type"].s();
+            double count = json["item_count"].d();
+            if (!kReportTypes.count(report_type) || !(count >= 0 && count <= 1000000) ||
+                count != static_cast<double>(static_cast<int>(count))) {
+                return crow::response(400, "unknown report_type, or item_count out of range");
+            }
+            db->log_run(owned->sheet_row_id, report_type, static_cast<int>(count), "ok", nullptr);
+            return crow::response(204);
+        });
+
     // Live design preview: one page of built-in sample labels in the given
     // stock and design (spec, order, hide). No sheet is read, so it's cheap
     // enough to re-render on every switch flip.
@@ -1302,6 +1350,15 @@ int main() {
         if (it == files.end()) return crow::response(404, "not found");
         crow::response res(200, it->second);
         res.set_header("Content-Type", "text/javascript; charset=utf-8");
+        // A worker runs under the CSP of its own script's response, not the
+        // page's (and the default csp_for("") allows no scripts, which would
+        // stop labels_worker.js importing labels.js and pdf-lib). So module
+        // files get a policy of their own: scripts from this app only, and
+        // nothing else — the worker fetches nothing (photos are passed in).
+        // For a module loaded by a page this header is ignored.
+        res.set_header("Content-Security-Policy",
+                       "default-src 'none'; script-src 'self'; base-uri 'none'; "
+                       "frame-ancestors 'none'");
         // Kept by SecurityMiddleware (it only forces no-store on non-public responses).
         res.set_header("Cache-Control", "public, max-age=300");
         return res;

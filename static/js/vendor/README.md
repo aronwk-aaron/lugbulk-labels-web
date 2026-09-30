@@ -2,7 +2,8 @@
 
 Served at `/static/js/vendor/<name>.js` (see `load_static_js` in
 `src/main.cpp`; only flat `[a-z0-9_-]+.js` names are served). Each one is an
-unmodified upstream file, pinned here by version and SHA-256. To update one,
+upstream file (unmodified, or built from upstream source as noted), pinned
+here by version and SHA-256. To update one,
 replace the file with the new upstream build, then update the version and
 hash below.
 
@@ -31,3 +32,20 @@ Check a copy with:
 ```sh
 sha256sum static/js/vendor/pdf-lib.js
 ```
+
+## qrcodegen.js
+
+- **What:** [QR Code generator library](https://github.com/nayuki/QR-Code-generator)
+  by Project Nayuki, TypeScript/JavaScript port — the QR code to BrickLink on
+  labels (`static/js/labels.js`). The same library, at the same commit, as
+  the server's C++ build (`CMakeLists.txt`), so the codes match module for
+  module (`tests/js/labels.test.mjs` checks against the C++'s matrices).
+- **Version:** v1.8.0, commit `720f62bddb7226106071d4728c292cb1df519ceb`.
+- **Upstream file:** `typescript-javascript/qrcodegen.ts` at that commit
+  (SHA-256 `c4749095a91bf9696e3a303998b9905e467094f53041e64393e65e6d887737fd`),
+  compiled with `npx -p typescript@5.6.3 tsc --target es2020 qrcodegen.ts`
+  (upstream ships TypeScript only). The one change: an `export default
+  qrcodegen;` line appended, to make it an ES module.
+- **SHA-256:** `0cc3d38d2c3b2f083bec80e61d27270ea11328ecc9130b0c4cb829aa70f6d8d4`
+- **License:** MIT, copyright (c) Project Nayuki — the notice is kept at the
+  top of the file.
