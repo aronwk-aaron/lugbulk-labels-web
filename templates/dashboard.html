@@ -103,6 +103,21 @@
   .field.grow select { width: 100%; }
   .inline-field { display: flex; align-items: center; gap: 0.4rem; }
 
+  /* Label stock combobox. */
+  .combo { position: relative; }
+  .combo input { width: 100%; }
+  #stock-list { position: absolute; z-index: 10; top: 100%; left: 0; right: 0; margin-top: 2px;
+                max-height: 340px; overflow-y: auto; background: var(--surface);
+                border: 1px solid var(--border-strong); border-radius: 6px; padding: 0.25rem 0;
+                box-shadow: 0 8px 24px rgb(0 0 0 / 0.18); color: var(--fg); font-size: 0.9rem; }
+  #stock-list .group { padding: 0.45rem 0.75rem 0.2rem; font-size: 0.72rem; font-weight: 600;
+                       text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); }
+  #stock-list [role=option] { padding: 0.35rem 0.75rem; cursor: pointer; }
+  #stock-list [role=option] .also { color: var(--muted); font-size: 0.8rem; }
+  #stock-list [role=option][aria-selected=true] { font-weight: 600; }
+  #stock-list [role=option].active { background: var(--button-hover); }
+  #stock-list .none { padding: 0.5rem 0.75rem; color: var(--muted); font-style: italic; }
+
   /* Design panel. */
   .switches { display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr));
               gap: 0.35rem 1rem; margin: 0.25rem 0 0.9rem; font-size: 0.9rem; }
@@ -147,14 +162,17 @@
   <p class="note">Saved with the sheet: everyone who has this sheet saved prints this design.
     The preview uses sample parts. <span id="design-status"></span></p>
   <div class="options">
-    <label class="field grow">Label stock
-      <select id="label-spec">
+    <div class="field grow combo">
+      <label for="stock-input" id="stock-label">Label stock</label>
+      <input id="stock-input" type="text" role="combobox" autocomplete="off" spellcheck="false"
+             aria-autocomplete="list" aria-expanded="false" aria-controls="stock-list"
+             placeholder="Type a part number, size or name — 8162, 30857, shipping…">
+      <ul id="stock-list" role="listbox" aria-labelledby="stock-label" hidden></ul>
+      <!-- The real value (and the stock list, from the server) lives here. -->
+      <select id="label-spec" hidden tabindex="-1" aria-hidden="true">
         {{#spec_groups}}<optgroup label="{{label}}">{{#specs}}<option value="{{id}}"{{#selected}} selected{{/selected}}>{{name}}</option>{{/specs}}</optgroup>{{/spec_groups}}
       </select>
-    </label>
-    <label class="field">Find stock
-      <input type="search" id="label-filter" placeholder="8162, 30857, shipping…" size="18">
-    </label>
+    </div>
     <label class="field">Part order
       <select id="part-order">
         <option value="heaviest">Heaviest parts first</option>
@@ -231,26 +249,127 @@ const opt = (id) => document.getElementById(id).value;
   });
 })();
 
-// Narrow the (long) label stock list to options matching the search box:
-// part number, any equivalent, size, or description.
-document.getElementById('label-filter').addEventListener('input', (e) => {
-  const q = e.target.value.trim().toLowerCase();
+// Label stock combobox: one box to type in and pick from. The hidden
+// <select id="label-spec"> holds the list and the chosen value, so the rest
+// of the page reads and sets it as before; the combobox keeps in sync.
+const stockCombo = (() => {
   const select = document.getElementById('label-spec');
-  let firstMatch = null;
+  const input = document.getElementById('stock-input');
+  const list = document.getElementById('stock-list');
+  // [{value, name, also, group, haystack}]
+  const items = [];
   for (const group of select.querySelectorAll('optgroup')) {
-    let any = false;
     for (const o of group.querySelectorAll('option')) {
-      const hit = !q || o.textContent.toLowerCase().includes(q);
-      o.hidden = !hit;
-      if (hit) { any = true; firstMatch = firstMatch || o; }
+      const m = o.textContent.match(/^(.*?)(?: \(also (.*)\))?$/);
+      items.push({ value: o.value, name: m[1], also: m[2] || '', group: group.label,
+                   haystack: (o.textContent + ' ' + group.label).toLowerCase() });
     }
-    group.hidden = !any;
   }
-  if (q && firstMatch && select.selectedOptions[0].hidden) {
-    select.value = firstMatch.value;
-    select.dispatchEvent(new Event('change'));
+  let shown = [];   // items currently listed
+  let active = -1;  // index into shown
+
+  const current = () => items.find(i => i.value === select.value);
+  const sync = () => {
+    input.value = current() ? current().name : '';
+    input.placeholder = hint;
+  };
+
+  function render(query) {
+    const words = query.toLowerCase().split(/\s+/).filter(Boolean);
+    shown = items.filter(i => words.every(w => i.haystack.includes(w)));
+    list.textContent = '';
+    let lastGroup = null;
+    shown.forEach((item, n) => {
+      if (item.group !== lastGroup) {
+        list.appendChild(el('li', { class: 'group', role: 'presentation', text: item.group }));
+        lastGroup = item.group;
+      }
+      const li = el('li', { role: 'option', id: 'stock-opt-' + n,
+                            'aria-selected': String(item.value === select.value) },
+                    [document.createTextNode(item.name)]);
+      if (item.also) li.appendChild(el('div', { class: 'also', text: 'also ' + item.also }));
+      // mousedown, not click: keep focus in the input so blur doesn't close first.
+      li.addEventListener('mousedown', (e) => { e.preventDefault(); choose(item); });
+      li.addEventListener('mousemove', () => setActive(n));
+      list.appendChild(li);
+    });
+    if (!shown.length) list.appendChild(el('li', { class: 'none', text: 'No label stock matches.' }));
   }
-});
+
+  function setActive(n) {
+    const prev = list.querySelector('.active');
+    if (prev) prev.classList.remove('active');
+    active = n;
+    const li = n >= 0 ? document.getElementById('stock-opt-' + n) : null;
+    if (li) {
+      li.classList.add('active');
+      li.scrollIntoView({ block: 'nearest' });
+      input.setAttribute('aria-activedescendant', li.id);
+    } else {
+      input.removeAttribute('aria-activedescendant');
+    }
+  }
+
+  function open(query) {
+    render(query);
+    list.hidden = false;
+    input.setAttribute('aria-expanded', 'true');
+    const selected = shown.findIndex(i => i.value === select.value);
+    setActive(query ? (shown.length ? 0 : -1) : selected);
+  }
+
+  function close() {
+    list.hidden = true;
+    input.setAttribute('aria-expanded', 'false');
+    input.removeAttribute('aria-activedescendant');
+    active = -1;
+  }
+
+  function choose(item) {
+    const changed = item.value !== select.value;
+    select.value = item.value;
+    sync();
+    close();
+    if (changed) select.dispatchEvent(new Event('change'));
+  }
+
+  // Focusing or clicking the box starts a fresh search: the box empties
+  // (the current stock shows as its placeholder) and the full list opens.
+  // Clearing, rather than selecting the text, works the same however the
+  // browser handles the click.
+  const hint = input.placeholder;
+  function startSearch() {
+    input.placeholder = current() ? current().name : hint;
+    input.value = '';
+    open('');
+  }
+  input.addEventListener('focus', startSearch);
+  input.addEventListener('mousedown', () => {
+    if (document.activeElement === input && list.hidden) startSearch();
+  });
+  input.addEventListener('input', () => open(input.value.trim()));
+  input.addEventListener('blur', () => { close(); sync(); });
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+      e.preventDefault();
+      if (list.hidden) { open(''); return; }
+      if (!shown.length) return;
+      const step = e.key === 'ArrowDown' ? 1 : -1;
+      setActive((active + step + shown.length) % shown.length);
+    } else if (e.key === 'Enter') {
+      if (!list.hidden && active >= 0 && shown[active]) {
+        e.preventDefault();
+        choose(shown[active]);
+      }
+    } else if (e.key === 'Escape') {
+      if (!list.hidden) { e.preventDefault(); close(); sync(); }
+    } else if (e.key === 'Tab' && !list.hidden && active >= 0 && input.value.trim()) {
+      choose(shown[active]);  // typed a search and tabbed away: take the highlighted match
+    }
+  });
+  sync();
+  return { sync };
+})();
 
 // --- Label design panel -------------------------------------------------
 // Switches for each label part; names match the server's LabelPart names.
@@ -322,6 +441,7 @@ async function openDesign(sheet) {
   designSheet = sheet;
   document.getElementById('design-sheet').textContent = sheet.display_name;
   document.getElementById('label-spec').value = d.spec;
+  stockCombo.sync();
   document.getElementById('part-order').value = d.order;
   const hidden = new Set(d.hide.split(',').filter(Boolean));
   for (const [id] of PARTS) document.getElementById('part-' + id).checked = !hidden.has(id);
