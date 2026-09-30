@@ -17,6 +17,7 @@
 #include <mutex>
 #include <optional>
 #include <string>
+#include <vector>
 
 namespace lugbulk::bricklink {
 
@@ -45,5 +46,18 @@ private:
     std::string signature_;
     std::shared_ptr<const Catalog> catalog_ = std::make_shared<Catalog>();
 };
+
+// POST /bricklink/lookup: the browser-side renderer's catalog lookup.
+inline constexpr size_t kMaxLookupIds = 2000;
+
+// The element ids in a lookup body, {"ids":["6225242", ...]}: at most
+// kMaxLookupIds, each passing is_valid_element_id. nullopt (and *error
+// set) for anything else.
+std::optional<std::vector<std::string>> parse_lookup_request(const std::string& body,
+                                                             std::string* error);
+
+// {"<id>": {"part":"3004","color":"Light Bluish Gray","weight":1.22|null}, ...}
+// for the ids the catalog knows; unknown ids are left out.
+std::string lookup_json(const Catalog& catalog, const std::vector<std::string>& ids);
 
 }  // namespace lugbulk::bricklink

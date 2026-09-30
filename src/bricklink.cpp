@@ -5,9 +5,15 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cmath>
+#include <cstdio>
 #include <fstream>
 #include <iostream>
+#include <set>
 #include <vector>
+
+#include "crow/json.h"
+#include "sheet_pivot.h"
 
 namespace lugbulk::bricklink {
 
@@ -130,6 +136,52 @@ std::shared_ptr<const Catalog> CatalogCache::get() {
         }
     }
     return catalog_;
+}
+
+std::optional<std::vector<std::string>> parse_lookup_request(const std::string& body,
+                                                             std::string* error) {
+    auto json = crow::json::load(body);
+    if (!json || json.t() != crow::json::type::Object || !json.has("ids") ||
+        json["ids"].t() != crow::json::type::List) {
+        *error = R"(expected {"ids":["6225242", ...]})";
+        return std::nullopt;
+    }
+    if (json["ids"].size() > kMaxLookupIds) {
+        *error = "at most " + std::to_string(kMaxLookupIds) + " ids per lookup";
+        return std::nullopt;
+    }
+    std::vector<std::string> ids;
+    for (const auto& v : json["ids"]) {
+        if (v.t() != crow::json::type::String || !is_valid_element_id(std::string(v.s()))) {
+            *error = "every id must be a LEGO element ID (4-8 digits)";
+            return std::nullopt;
+        }
+        ids.push_back(std::string(v.s()));
+    }
+    return ids;
+}
+
+std::string lookup_json(const Catalog& catalog, const std::vector<std::string>& ids) {
+    std::string out = "{";
+    std::set<std::string> seen;
+    for (const auto& id : ids) {
+        auto it = catalog.find(id);
+        if (it == catalog.end() || !seen.insert(id).second) continue;
+        std::string key, part, color;
+        crow::json::escape(id, key);
+        crow::json::escape(it->second.part_no, part);
+        crow::json::escape(it->second.color, color);
+        std::string weight = "null";
+        if (it->second.weight && std::isfinite(*it->second.weight)) {
+            char buf[32];
+            std::snprintf(buf, sizeof(buf), "%.10g", *it->second.weight);
+            weight = buf;
+        }
+        if (out.size() > 1) out += ",";
+        out += "\"" + key + "\":{\"part\":\"" + part + "\",\"color\":\"" + color +
+               "\",\"weight\":" + weight + "}";
+    }
+    return out + "}";
 }
 
 }  // namespace lugbulk::bricklink

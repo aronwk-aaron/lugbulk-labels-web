@@ -17,6 +17,8 @@
 #include <string>
 #include <vector>
 
+#include "crow/json.h"
+
 #include "colors.h"
 #include "bricklink.h"
 #include "image_backdrop.h"
@@ -284,6 +286,67 @@ void test_bricklink_catalog() {
     rmdir(dir.c_str());
 }
 
+// POST /bricklink/lookup's request parsing and response.
+void test_bricklink_lookup() {
+    std::string error;
+    auto ids = bricklink::parse_lookup_request(R"({"ids":["4211388","6584302","9999999"]})", &error);
+    CHECK(ids && ids->size() == 3 && (*ids)[0] == "4211388");
+    CHECK(bricklink::parse_lookup_request(R"({"ids":[]})", &error).has_value());
+    for (const char* bad : {"", "[]", "{}", R"({"ids":"4211388"})", R"({"ids":[4211388]})",
+                            R"({"ids":["42"]})", R"({"ids":["../etc"]})", R"({"ids":["4211388x"]})"}) {
+        error.clear();
+        if (bricklink::parse_lookup_request(bad, &error) || error.empty()) {
+            std::cerr << "lookup request accepted: " << bad << "\n";
+            ++g_failures;
+        }
+    }
+    auto many = [](size_t n) {
+        std::string body = R"({"ids":[)";
+        for (size_t i = 0; i < n; ++i) body += (i ? ",\"" : "\"") + std::to_string(1000000 + i) + "\"";
+        return body + "]}";
+    };
+    CHECK(bricklink::parse_lookup_request(many(bricklink::kMaxLookupIds), &error).has_value());
+    CHECK(!bricklink::parse_lookup_request(many(bricklink::kMaxLookupIds + 1), &error));
+
+    bricklink::Catalog catalog;
+    catalog["4211388"] = {"3004", "Light Bluish Gray", 1.22};
+    catalog["6584302"] = {"x223", "Black \"Pearl\"", std::nullopt};
+    CHECK_EQ(bricklink::lookup_json(catalog, {"4211388", "9999999", "6584302", "4211388"}),
+             std::string(R"({"4211388":{"part":"3004","color":"Light Bluish Gray","weight":1.22},)"
+                         R"("6584302":{"part":"x223","color":"Black \"Pearl\"","weight":null}})"));
+    CHECK_EQ(bricklink::lookup_json(catalog, {}), std::string("{}"));
+    CHECK_EQ(bricklink::lookup_json(bricklink::Catalog{}, {"4211388"}), std::string("{}"));
+}
+
+// GET /img/<name>: which names map to a cache file, and the cache probe.
+void test_image_names_and_cache() {
+    CHECK(labels_pdf::element_id_from_image_name("6225242.jpg") == std::optional<std::string>("6225242"));
+    for (const char* bad : {"abc.jpg", "6225242.png", "6225242", ".jpg", "123.jpg", "../6225242.jpg",
+                            "6225242.jpg.jpg", "6225242.JPG", "622%2F242.jpg", "https:x.jpg"}) {
+        if (labels_pdf::element_id_from_image_name(bad)) {
+            std::cerr << "image name accepted: " << bad << "\n";
+            ++g_failures;
+        }
+    }
+
+    char dir_template[] = "/tmp/lugbulk_img_XXXXXX";
+    std::string dir = mkdtemp(dir_template);
+    std::string path;
+    CHECK(labels_pdf::probe_image_cache("6225242", dir, &path) == labels_pdf::CachedImage::kUnknown);
+    CHECK_EQ(path, dir + "/6225242.jpg");
+    std::ofstream(dir + "/6225242.jpg", std::ios::binary) << "\xFF\xD8\xFF\xE0jpeg";
+    CHECK(labels_pdf::probe_image_cache("6225242", dir, &path) == labels_pdf::CachedImage::kHit);
+    std::ofstream(dir + "/300101.jpg", std::ios::binary);  // a fresh cached miss
+    CHECK(labels_pdf::probe_image_cache("300101", dir) == labels_pdf::CachedImage::kMiss);
+    CHECK(labels_pdf::cached_image_path("300101", "https://invalid.invalid/x.jpg", dir).empty());
+    CHECK(labels_pdf::cached_image_path("6225242", "https://invalid.invalid/x.jpg", dir) ==
+          dir + "/6225242.jpg");  // a hit never touches the network
+    CHECK(labels_pdf::probe_image_cache("../x", dir, &path) == labels_pdf::CachedImage::kMiss);
+    CHECK(path.empty());
+    for (const char* f : {"/6225242.jpg", "/300101.jpg"}) std::remove((dir + f).c_str());
+    rmdir(dir.c_str());
+}
+
 void test_placeholder_color_and_catalog_weight() {
     std::vector<std::vector<std::string>> rows = {
         {"#", "Element ID", "", "Description", "BL Color", "", "", "Ann"},
@@ -340,6 +403,27 @@ void test_label_specs() {
     const auto* a4 = layout::find_label_spec("L7163");
     CHECK(a4 && a4->page == "A4");
     CHECK(layout::find_label_spec("bogus") == nullptr);
+
+    // GET /label-specs.json: every loaded stock, every field.
+    auto json = crow::json::load(layout::label_specs_json());
+    CHECK(json && json["specs"].size() == layout::label_specs().size());
+    if (json && json["specs"].size() == layout::label_specs().size()) {
+        CHECK_EQ(std::string(json["default"].s()), std::string("avery5162"));
+        CHECK(std::string(json["source"].s()).find("gLabels") != std::string::npos);
+        for (size_t i = 0; i < layout::label_specs().size(); ++i) {
+            const auto& s = layout::label_specs()[i];
+            const auto& j = json["specs"][i];
+            CHECK_EQ(std::string(j["id"].s()), s.id);
+            CHECK_EQ(std::string(j["page"].s()), s.page);
+            CHECK_EQ(std::string(j["display_name"].s()), s.display_name());
+            CHECK_EQ(j["equivalents"].size(), s.equivalents.size());
+            CHECK_EQ(j["columns"].i(), int64_t{s.columns});
+            CHECK_EQ(j["per_sheet"].i(), int64_t{s.per_sheet()});
+            CHECK(near(j["label_width_mm"].d(), s.label_width_mm));
+            CHECK(near(j["top_margin_mm"].d(), s.top_margin_mm));
+            CHECK(near(j["column_gap_mm"].d(), s.column_gap_mm));
+        }
+    }
     // Every stock's grid fits on its page.
     for (const auto& s : layout::label_specs()) {
         double right = s.left_margin_mm + s.columns * s.label_width_mm +
@@ -545,6 +629,8 @@ int main() {
         {"reports_csv_injection", test_reports_csv_injection},
         {"backdrop", test_backdrop},
         {"bricklink_catalog", test_bricklink_catalog},
+        {"bricklink_lookup", test_bricklink_lookup},
+        {"image_names_and_cache", test_image_names_and_cache},
         {"placeholder_color_and_catalog_weight", test_placeholder_color_and_catalog_weight},
         {"label_specs", test_label_specs},
         {"spreadsheet_uploads", test_spreadsheet_uploads},
