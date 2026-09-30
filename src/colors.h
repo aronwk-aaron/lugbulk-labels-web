@@ -6,6 +6,8 @@
 // is looked up here. Lookups ignore punctuation, spacing and case.
 #pragma once
 
+#include <array>
+#include <optional>
 #include <string>
 
 namespace lugbulk::colors {
@@ -27,5 +29,8 @@ bool is_transparent(const std::string& lego, const std::string& bl);
 // True for white-family colors (White, Glow In Dark White, ...), which are
 // hard to see on LEGO's white-background product shots.
 bool is_light(const std::string& lego, const std::string& bl);
+
+// (r, g, b) in 0..1 for a label's color swatch, or nullopt if unknown.
+std::optional<std::array<double, 3>> swatch_rgb(const std::string& lego, const std::string& bl);
 
 }  // namespace lugbulk::colors

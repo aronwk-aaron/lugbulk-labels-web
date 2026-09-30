@@ -6,7 +6,7 @@
 <title>lugbulk-labels-web</title>
 <style>
   :root { color-scheme: light dark; }
-  body { font-family: system-ui, sans-serif; max-width: 640px; margin: 2rem auto; padding: 0 1rem; }
+  body { font-family: system-ui, sans-serif; max-width: 900px; margin: 2rem auto; padding: 0 1rem; }
   header { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 1.5rem; }
   h1 { font-size: 1.25rem; margin: 0; }
   h1 .meta { font-size: 0.75rem; color: #888; font-weight: normal; }
@@ -34,6 +34,14 @@
   li .issues { flex-basis: 100%; font-size: 0.85rem; margin: 0.25rem 0 0; padding-left: 1.2rem;
                list-style: disc; }
   li .issues li { display: list-item; border: 0; padding: 0.1rem 0; }
+  #design[hidden] { display: none; }
+  #design { border: 1px solid #ccc; border-radius: 6px; padding: 0.75rem 1rem; }
+  #design .switches { display: flex; flex-wrap: wrap; gap: 0.3rem 1rem; margin: 0.5rem 0; font-size: 0.9rem; }
+  #design .switches label { display: flex; gap: 0.3rem; align-items: center; }
+  #design .options .stock { flex: 1 1 100%; min-width: 0; }
+  #design .options .stock select { flex: 1; min-width: 0; width: 100%; }
+  #preview { width: 100%; height: 520px; border: 1px solid #ddd; background: #fff; }
+  .saved-note { color: #888; font-size: 0.8rem; }
 </style>
 </head>
 <body>
@@ -50,7 +58,22 @@
 <section>
   <h2>Your saved sheets</h2>
   <div class="options">
-    <label>Label size
+    <label>Reports as
+      <select id="report-format">
+        <option value="pdf">PDF</option>
+        <option value="csv">CSV</option>
+      </select>
+    </label>
+  </div>
+  <ul id="saved-list"><li class="empty">Loading&hellip;</li></ul>
+</section>
+
+<section id="design" hidden>
+  <h2>Label design: <span id="design-sheet"></span></h2>
+  <p class="saved-note">Saved with the sheet — everyone who has this sheet saved prints the same
+    design. The preview uses sample parts. <span id="design-status"></span></p>
+  <div class="options">
+    <label class="stock">Label stock
       <select id="label-spec">
         {{#spec_groups}}<optgroup label="{{label}}">{{#specs}}<option value="{{id}}"{{#selected}} selected{{/selected}}>{{name}}</option>{{/specs}}</optgroup>{{/spec_groups}}
       </select>
@@ -65,14 +88,13 @@
         <option value="sheet">Sheet order</option>
       </select>
     </label>
-    <label>Reports as
-      <select id="report-format">
-        <option value="pdf">PDF</option>
-        <option value="csv">CSV</option>
-      </select>
-    </label>
+    <button type="button" id="test-page-btn">Alignment test page</button>
+    <button type="button" id="design-close">Close</button>
   </div>
-  <ul id="saved-list"><li class="empty">Loading&hellip;</li></ul>
+  <div class="switches" id="switches"></div>
+  <iframe id="preview" title="Label preview"></iframe>
+  <p class="saved-note">No preview showing (some phones can't show PDFs inline)?
+    <a id="preview-open" href="#" target="_blank" rel="noopener">Open it in a new tab</a>.</p>
 </section>
 
 <section>
@@ -105,7 +127,7 @@ async function api(path, opts) {
 }
 
 // Remembers the option pickers across visits (per browser only).
-for (const id of ['label-spec', 'part-order', 'report-format']) {
+for (const id of ['report-format']) {
   const select = document.getElementById(id);
   try {
     const saved = localStorage.getItem('lugbulk.' + id);
@@ -135,6 +157,99 @@ document.getElementById('label-filter').addEventListener('input', (e) => {
   if (q && firstMatch && select.selectedOptions[0].hidden) {
     select.value = firstMatch.value;
     select.dispatchEvent(new Event('change'));
+  }
+});
+
+// --- Label design panel -------------------------------------------------
+// Switches for each label part; names match the server's LabelPart names.
+const PARTS = [
+  ['photo', 'Part photo'], ['element_id', 'Element ID'], ['qty', 'Quantity'],
+  ['lego_color', 'LEGO color'], ['bl_color', 'BrickLink color'], ['description', 'Description'],
+  ['name', 'Name'], ['count', '"3 of 10" count'], ['backdrop', 'Gray tile behind clear/white parts'],
+  ['swatch', 'Color swatch'], ['qr', 'QR code to BrickLink'],
+];
+const switchesEl = document.getElementById('switches');
+for (const [id, text] of PARTS) {
+  const box = el('input', { type: 'checkbox', id: 'part-' + id });
+  switchesEl.appendChild(el('label', {}, [box, document.createTextNode(text)]));
+}
+let designSheet = null;  // the saved sheet whose design is open
+let previewUrl = null;
+const debounce = (fn, ms) => { let t; return () => { clearTimeout(t); t = setTimeout(fn, ms); }; };
+
+function currentDesign() {
+  const hide = PARTS.filter(([id]) => !document.getElementById('part-' + id).checked).map(([id]) => id);
+  return { spec: opt('label-spec'), order: opt('part-order'), hide: hide.join(',') };
+}
+
+const refreshPreview = debounce(async () => {
+  const d = currentDesign();
+  const q = new URLSearchParams(d).toString();
+  try {
+    const res = await api('/preview?' + q);
+    if (!res.ok) throw new Error(await res.text());
+    const url = URL.createObjectURL(await res.blob());
+    document.getElementById('preview').src = url + '#view=FitH';
+    document.getElementById('preview-open').href = url;
+    if (previewUrl) URL.revokeObjectURL(previewUrl);
+    previewUrl = url;
+  } catch (e) {
+    document.getElementById('design-status').textContent = e.message;
+  }
+}, 350);
+
+const saveDesign = debounce(async () => {
+  if (!designSheet) return;
+  const status = document.getElementById('design-status');
+  try {
+    const res = await api('/sheets/' + encodeURIComponent(designSheet.row_id) + '/design', {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(currentDesign())
+    });
+    if (!res.ok) throw new Error(await res.text());
+    status.textContent = 'Saved.';
+  } catch (e) {
+    status.textContent = 'Not saved: ' + e.message;
+  }
+}, 700);
+
+function designChanged() {
+  document.getElementById('design-status').textContent = 'Saving…';
+  refreshPreview();
+  saveDesign();
+}
+for (const id of ['label-spec', 'part-order']) {
+  document.getElementById(id).addEventListener('change', designChanged);
+}
+switchesEl.addEventListener('change', designChanged);
+
+async function openDesign(sheet) {
+  const res = await api('/sheets/' + encodeURIComponent(sheet.row_id) + '/design');
+  if (!res.ok) return;
+  const d = await res.json();
+  designSheet = sheet;
+  document.getElementById('design-sheet').textContent = sheet.display_name;
+  document.getElementById('label-spec').value = d.spec;
+  document.getElementById('part-order').value = d.order;
+  const hidden = new Set(d.hide.split(',').filter(Boolean));
+  for (const [id] of PARTS) document.getElementById('part-' + id).checked = !hidden.has(id);
+  document.getElementById('design-status').textContent = '';
+  const panel = document.getElementById('design');
+  panel.hidden = false;
+  panel.scrollIntoView({ behavior: 'smooth' });
+  refreshPreview();
+}
+document.getElementById('design-close').addEventListener('click', () => {
+  document.getElementById('design').hidden = true;
+  designSheet = null;
+});
+document.getElementById('test-page-btn').addEventListener('click', async () => {
+  try {
+    const res = await api('/test-page?spec=' + encodeURIComponent(opt('label-spec')));
+    if (!res.ok) throw new Error(await res.text());
+    window.open(URL.createObjectURL(await res.blob()), '_blank');
+  } catch (e) {
+    document.getElementById('design-status').textContent = e.message;
   }
 });
 
@@ -183,7 +298,7 @@ async function loadSavedSheets() {
       const historySpan = el('span', { class: 'meta history' });
 
       // "Last run" line, from the server's run log.
-      const REPORT_NAMES = { labels: 'Labels', lot_counts: 'Lot counts', parts: 'Parts list' };
+      const REPORT_NAMES = { labels: 'Labels', lot_counts: 'Lot counts', parts: 'Parts list', checklist: 'Checklist' };
       const refreshHistory = async () => {
         try {
           const res = await api(base + '/history');
@@ -240,13 +355,15 @@ async function loadSavedSheets() {
         checkBtn.disabled = false;
       });
 
+      const designBtn = el('button', { type: 'button', text: 'Design' });
+      designBtn.addEventListener('click', () => openDesign(sheet));
+      // Labels, checklist and parts list follow the sheet's saved design.
       const labelsBtn = downloadButton('Labels', 'Generating labels… (can take a minute)',
-        () => base + '/labels?spec=' + encodeURIComponent(opt('label-spec')) +
-              '&order=' + encodeURIComponent(opt('part-order')),
-        () => sheet.display_name + ' labels.pdf');
+        () => base + '/labels', () => sheet.display_name + ' labels.pdf');
+      const checklistBtn = downloadButton('Checklist', 'Generating packing checklist…',
+        () => base + '/checklist', () => sheet.display_name + ' packing checklist.pdf');
       const partsBtn = downloadButton('Parts list', 'Generating parts list…',
-        () => base + '/parts?format=' + encodeURIComponent(opt('report-format')) +
-              '&order=' + encodeURIComponent(opt('part-order')),
+        () => base + '/parts?format=' + encodeURIComponent(opt('report-format')),
         () => sheet.display_name + ' parts.' + opt('report-format'));
       const lotsBtn = downloadButton('Lot counts', 'Generating lot counts…',
         () => base + '/lots?format=' + encodeURIComponent(opt('report-format')),
@@ -267,7 +384,7 @@ async function loadSavedSheets() {
         }
       });
 
-      const actions = el('span', { class: 'actions' }, [checkBtn, labelsBtn, partsBtn, lotsBtn, delBtn]);
+      const actions = el('span', { class: 'actions' }, [checkBtn, designBtn, labelsBtn, checklistBtn, partsBtn, lotsBtn, delBtn]);
       list.appendChild(el('li', {}, [
         el('span', {}, [nameSpan, document.createElement('br'), statusSpan,
                         document.createElement('br'), historySpan]),

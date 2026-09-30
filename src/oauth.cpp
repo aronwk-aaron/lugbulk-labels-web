@@ -264,6 +264,19 @@ std::vector<SheetFile> list_spreadsheets(const std::string& access_token,
     return results;
 }
 
+std::string fetch_spreadsheet_title(const std::string& access_token,
+                                    const std::string& spreadsheet_id) {
+    std::unique_ptr<CURL, decltype(&curl_easy_cleanup)> curl(curl_easy_init(), &curl_easy_cleanup);
+    if (!curl) throw std::runtime_error("oauth error: curl init failed");
+    std::string url = std::string(kSheetsValuesEndpoint) + url_encode(curl.get(), spreadsheet_id) +
+                      "?fields=" + url_encode(curl.get(), "properties.title");
+    auto json = crow::json::load(http_get_bearer(url, access_token));
+    if (!json || !json.has("properties") || !json["properties"].has("title")) {
+        throw std::runtime_error("oauth error: malformed spreadsheet response");
+    }
+    return std::string(json["properties"]["title"].s());
+}
+
 std::vector<std::vector<std::string>> fetch_sheet_values(const std::string& access_token,
                                                            const std::string& spreadsheet_id,
                                                            const std::string& range) {

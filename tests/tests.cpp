@@ -20,6 +20,8 @@
 #include "image_backdrop.h"
 #include "labels_pdf.h"
 #include "rate_limits.h"
+#include "db.h"
+#include "samples.h"
 #include "ordering.h"
 #include "reports.h"
 #include "sheet_layout.h"
@@ -365,6 +367,70 @@ void test_rate_limits() {
     CHECK(!list.allows("@lug.org"));
 }
 
+void test_label_options_and_extras() {
+    using labels_pdf::LabelOptions;
+    using labels_pdf::LabelPart;
+    LabelOptions defaults;
+    CHECK(defaults.show(LabelPart::kPhoto) && !defaults.show(LabelPart::kQr));
+    CHECK_EQ(defaults.hidden_csv(), std::string("qr"));
+    auto o = LabelOptions::parse("photo, bl_color", "qr");
+    CHECK(o && !o->show(LabelPart::kPhoto) && !o->show(LabelPart::kBlColor) && o->show(LabelPart::kQr));
+    std::string err;
+    CHECK(!LabelOptions::parse("bogus", "", &err) && err.find("bogus") != std::string::npos);
+    auto all = LabelOptions::from_hidden("");
+    CHECK(all && all->show(LabelPart::kQr) && all->hidden_csv().empty());
+    auto h = LabelOptions::from_hidden("qr,name");
+    CHECK(h && !h->show(LabelPart::kQr) && !h->show(LabelPart::kName));
+    CHECK_EQ(h->hidden_csv(), std::string("name,qr"));
+
+    auto rgb = colors::swatch_rgb("", "Light Bluish Gray");
+    CHECK(rgb && std::fabs((*rgb)[0] - 0xA0 / 255.0) < 1e-9);
+    CHECK(!colors::swatch_rgb("MYSTERY", ""));
+    CHECK_EQ(labels_pdf::bricklink_url("6225242"),
+             std::string("https://www.bricklink.com/v2/search.page?q=6225242"));
+
+    auto records = samples::sample_records();
+    CHECK(records.size() == 9 && records.front().part_total > 0);
+
+    // Every combination renders, from no parts to everything (incl. QR),
+    // with photos as cached misses so nothing touches the network.
+    char dir_template[] = "/tmp/lugbulk_opts_XXXXXX";
+    std::string dir = mkdtemp(dir_template);
+    for (const auto& r : records) std::ofstream(dir + "/" + r.element_id + ".jpg");
+    const char* designs[] = {"", "qr", "photo,element_id,qty,lego_color,bl_color,description,name,count",
+                             "photo,swatch", "name,count"};
+    for (const char* hide : designs) {
+        for (const char* stock : {"avery5160", "avery5162", "dymo30857"}) {
+            auto pdf = labels_pdf::build_labels_pdf(records, dir, *layout::find_label_spec(stock),
+                                                    *LabelOptions::from_hidden(hide), 1);
+            CHECK(pdf.size() > 500);
+        }
+    }
+    auto page = labels_pdf::build_test_page(*layout::find_label_spec("avery5160"));
+    CHECK(std::string(page.begin(), page.begin() + 5) == "%PDF-");
+    auto checklist = reports::checklist_pdf(records);
+    CHECK(checklist.size() > 1000);
+    for (const auto& r : records) std::remove((dir + "/" + r.element_id + ".jpg").c_str());
+    rmdir(dir.c_str());
+}
+
+void test_design_storage() {
+    char dir_template[] = "/tmp/lugbulk_db_XXXXXX";
+    std::string dir = mkdtemp(dir_template);
+    {
+        Db db(dir + "/t.sqlite3", LUGBULK_SCHEMA_PATH);
+        std::vector<uint8_t> token{1, 2, 3};
+        User u = db.upsert_user("sub-1", "ann@example.com", &token);
+        CHECK(!db.get_design("sheet1"));
+        db.put_design("sheet1", Design{"avery5160", "lightest", "qr,photo"}, u.id);
+        db.put_design("sheet1", Design{"dymo30857", "sheet", "name"}, u.id);
+        auto d = db.get_design("sheet1");
+        CHECK(d && d->label_spec == "dymo30857" && d->part_order == "sheet" && d->hidden_parts == "name");
+    }
+    std::remove((dir + "/t.sqlite3").c_str());
+    rmdir(dir.c_str());
+}
+
 int main() {
     layout::load_label_specs(LUGBULK_LABEL_SPECS_PATH);
     const std::pair<const char*, std::function<void()>> tests[] = {
@@ -381,6 +447,8 @@ int main() {
         {"placeholder_color_and_catalog_weight", test_placeholder_color_and_catalog_weight},
         {"label_specs", test_label_specs},
         {"rate_limits", test_rate_limits},
+        {"label_options_and_extras", test_label_options_and_extras},
+        {"design_storage", test_design_storage},
         {"labels_pdf_every_spec", test_labels_pdf_every_spec},
     };
     for (const auto& [name, fn] : tests) {

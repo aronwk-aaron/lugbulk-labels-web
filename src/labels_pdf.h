@@ -8,7 +8,10 @@
 //          Person Name (bold, centered)    3 of 10
 #pragma once
 
+#include <array>
 #include <cstdint>
+#include <optional>
+#include <string_view>
 #include <string>
 #include <vector>
 
@@ -17,6 +20,43 @@
 
 namespace lugbulk::labels_pdf {
 
+// Parts of a label that can be switched on and off (the dashboard's design
+// switches; the CLI's --hide/--show). Names match the CLI's LABEL_PARTS.
+enum class LabelPart {
+    kPhoto, kElementId, kQty, kLegoColor, kBlColor, kDescription, kName, kCount, kBackdrop,
+    kSwatch, kQr,
+};
+inline constexpr std::array<std::string_view, 11> kLabelPartNames{
+    "photo", "element_id", "qty", "lego_color", "bl_color", "description", "name", "count",
+    "backdrop", "swatch", "qr"};
+
+std::optional<LabelPart> label_part_from_name(std::string_view name);
+
+// Which parts to draw. Everything is on by default except the QR code.
+class LabelOptions {
+public:
+    LabelOptions() { set(LabelPart::kQr, false); }
+    bool show(LabelPart p) const { return !hidden_[static_cast<size_t>(p)]; }
+    void set(LabelPart p, bool shown) { hidden_[static_cast<size_t>(p)] = !shown; }
+
+    // Defaults, then comma-separated part names to hide and to show. On an
+    // unknown name returns nullopt and sets *error.
+    static std::optional<LabelOptions> parse(const std::string& hide, const std::string& show = "",
+                                             std::string* error = nullptr);
+    // Everything on except the comma-separated parts listed.
+    static std::optional<LabelOptions> from_hidden(const std::string& hidden,
+                                                   std::string* error = nullptr);
+    // The hidden parts, comma-separated (what from_hidden round-trips).
+    std::string hidden_csv() const;
+
+private:
+    std::array<bool, kLabelPartNames.size()> hidden_{};
+};
+
+// Where a label's QR code points: BrickLink's search, which resolves LEGO
+// element IDs to the right part and color.
+std::string bricklink_url(const std::string& element_id);
+
 // `image_cache_dir` is where part thumbnails are cached across runs/sheets
 // (keyed by element id, shared across all sheets — LEGO element photos
 // aren't sheet- or user-specific). A cached miss (404/timeout/etc.) is
@@ -24,10 +64,17 @@ namespace lugbulk::labels_pdf {
 // transient CDN outage doesn't permanently blank out a thumbnail.
 //
 // Records are drawn in the order given (see ordering::order_records).
+// `max_pages` > 0 stops after that many pages (the live preview).
 // Returns the built PDF as an in-memory buffer — nothing is written to
 // disk except the (non-sensitive, shared) image cache.
 std::vector<uint8_t> build_labels_pdf(const std::vector<LabelRecord>& records,
                                       const std::string& image_cache_dir,
-                                      const layout::LabelSpec& spec);
+                                      const layout::LabelSpec& spec,
+                                      const LabelOptions& opts = LabelOptions(),
+                                      size_t max_pages = 0);
+
+// One page with every label position outlined and numbered, to print on
+// plain paper and hold against the label stock to check alignment.
+std::vector<uint8_t> build_test_page(const layout::LabelSpec& spec);
 
 }  // namespace lugbulk::labels_pdf

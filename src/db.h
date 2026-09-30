@@ -32,6 +32,13 @@ struct Sheet {
     std::string display_name;
 };
 
+// A saved label design (see sql/schema.sql `sheet_designs`).
+struct Design {
+    std::string label_spec;    // LabelSpec id
+    std::string part_order;    // "heaviest" | "lightest" | "sheet"
+    std::string hidden_parts;  // comma-separated LabelPart names
+};
+
 // One row of the run history log.
 struct Run {
     std::string report_type;  // "labels" | "lot_counts" | "parts"
@@ -116,6 +123,10 @@ public:
     // Most recent runs for a sheet, newest first. Callers must have done
     // the find_owned_sheet ownership check.
     std::vector<Run> list_runs(int64_t sheet_row_id, int limit);
+
+    // Label design for a Google Sheet, shared across users; nullopt if none saved.
+    std::optional<Design> get_design(const std::string& google_sheet_id);
+    void put_design(const std::string& google_sheet_id, const Design& design, int64_t user_id);
 
     // BrickLink lookup cache.
     std::map<std::string, BrickLinkPart> get_bricklink_parts(const std::vector<std::string>& element_ids);
