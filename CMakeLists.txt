@@ -34,6 +34,7 @@ find_package(OpenSSL REQUIRED)      # OAuth token exchange (HTTPS client) + Crow
 find_package(SQLite3 REQUIRED)      # sessions / users / sheets / run log
 find_package(CURL REQUIRED)         # outbound HTTPS to Google (OAuth + Sheets API)
 find_package(JPEG REQUIRED)         # decoding trans-part photos to outline them
+find_package(ZLIB REQUIRED)         # unpacking uploaded .xlsx workbooks
 
 # --- PDF library: PoDoFo ---
 # No upstream CMake config on Debian (libpodofo-dev), so locate by hand.
@@ -61,6 +62,7 @@ add_library(lugbulk_core STATIC
     src/labels_pdf.cpp
     src/rate_limits.cpp
     src/samples.cpp
+    src/spreadsheet.cpp
     src/pdf_text.cpp
 )
 
@@ -77,6 +79,7 @@ target_link_libraries(lugbulk_core PUBLIC
     SQLite::SQLite3
     CURL::libcurl
     JPEG::JPEG
+    ZLIB::ZLIB
     qrcodegen
     ${PODOFO_LIBRARY}
 )
@@ -91,7 +94,8 @@ if(LUGBULK_BUILD_TESTS)
     add_executable(lugbulk_tests tests/tests.cpp)
     target_compile_definitions(lugbulk_tests PRIVATE
         LUGBULK_LABEL_SPECS_PATH="${CMAKE_SOURCE_DIR}/data/label_specs.json"
-        LUGBULK_SCHEMA_PATH="${CMAKE_SOURCE_DIR}/sql/schema.sql")
+        LUGBULK_SCHEMA_PATH="${CMAKE_SOURCE_DIR}/sql/schema.sql"
+        LUGBULK_FIXTURES="${CMAKE_SOURCE_DIR}/tests/fixtures")
     target_link_libraries(lugbulk_tests PRIVATE lugbulk_core)
     add_test(NAME lugbulk_tests COMMAND lugbulk_tests)
 endif()

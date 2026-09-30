@@ -35,6 +35,7 @@
 #include <thread>
 #include <cctype>
 #include <ctime>
+#include <functional>
 #include <future>
 #include <iostream>
 #include <map>
@@ -51,6 +52,7 @@
 #include "labels_pdf.h"
 #include "rate_limits.h"
 #include "samples.h"
+#include "spreadsheet.h"
 #include "oauth.h"
 #include "ordering.h"
 #include "reports.h"
@@ -81,13 +83,7 @@ std::string local_url(const Config& cfg, const std::string& path) {
 
 // "https://host[:port]" of the app, from the OAuth redirect URI (the one
 // place the public origin is configured).
-std::string app_origin(const Config& cfg) {
-    const std::string& uri = cfg.google_redirect_uri;
-    size_t scheme_end = uri.find("://");
-    if (scheme_end == std::string::npos) return "";
-    size_t path_start = uri.find('/', scheme_end + 3);
-    return uri.substr(0, path_start);
-}
+std::string app_origin(const Config& cfg) { return cfg.public_url; }
 
 // Applied to every response:
 //  - Security headers, and a text/plain default so an error message that
@@ -148,6 +144,11 @@ crow::response too_many(int retry_after, const std::string& message) {
     return res;
 }
 
+// Rate-limit key for a request: the signed-in user, else the client IP.
+std::string visitor_key(const crow::request& req, const std::optional<User>& user) {
+    return user ? "user:" + std::to_string(user->id) : "ip:" + client_ip(req);
+}
+
 // Admission for an expensive request (a report or Check sheet): the
 // user's rate limit, then one job per user and MAX_CONCURRENT_JOBS
 // server-wide. Refusals are immediate — nothing queues on a worker thread.
@@ -156,14 +157,27 @@ struct JobAdmission {
     crow::response refused;
 };
 
+JobAdmission start_job(const std::string& limiter_key, int64_t gate_id);
+
 JobAdmission start_job(int64_t user_id) {
+    return start_job("user:" + std::to_string(user_id), user_id);
+}
+
+// Same, for an anonymous upload: limits keyed by client IP.
+JobAdmission start_anonymous_job(const std::string& ip) {
+    // A negative gate id per IP, so it can't collide with a user id.
+    int64_t gate_id = -1 - static_cast<int64_t>(std::hash<std::string>{}(ip) & 0x3fffffffffffffffULL);
+    return start_job("ip:" + ip, gate_id);
+}
+
+JobAdmission start_job(const std::string& limiter_key, int64_t gate_id) {
     JobAdmission a;
-    if (auto retry = g_guards->jobs_per_user.take(std::to_string(user_id))) {
+    if (auto retry = g_guards->jobs_per_user.take(limiter_key)) {
         a.refused = too_many(*retry, "That's a lot of reports in a short time — try again in " +
                                          std::to_string(*retry) + " seconds.");
         return a;
     }
-    auto result = g_guards->jobs.enter(user_id);
+    auto result = g_guards->jobs.enter(gate_id);
     if (!result.ticket) {
         a.refused = result.refusal == limits::JobGate::Refusal::kUserBusy
                         ? too_many(5, "You already have a report running — wait for it to finish.")
@@ -184,6 +198,15 @@ std::string csp_for(const std::string& nonce) {
            "base-uri 'none'; form-action 'self'";
 }
 
+// Whether a request's Origin header is this app. Compared to the configured
+// public URL, or without one to the Host the request was sent to.
+bool same_origin(const std::string& req_origin, const std::string& public_url,
+                 const std::string& host) {
+    if (!public_url.empty()) return req_origin == public_url;
+    size_t scheme_end = req_origin.find("://");
+    return scheme_end != std::string::npos && req_origin.substr(scheme_end + 3) == host;
+}
+
 struct SecurityMiddleware {
     struct context {};
     std::string origin;  // set in main() from the config
@@ -202,7 +225,7 @@ struct SecurityMiddleware {
         }
         if (req.method == crow::HTTPMethod::Get || req.method == crow::HTTPMethod::Head) return;
         std::string req_origin = req.get_header_value("Origin");
-        if (!req_origin.empty() && !origin.empty() && req_origin != origin) {
+        if (!req_origin.empty() && !same_origin(req_origin, origin, req.get_header_value("Host"))) {
             res.code = 403;
             res.body = "cross-origin request refused";
             res.end();
@@ -243,7 +266,7 @@ using App = crow::App<SecurityMiddleware>;
 std::string cookie_attrs(const Config& cfg, int max_age_seconds) {
     std::string attrs = "Path=/; HttpOnly; SameSite=Lax; Max-Age=" +
                          std::to_string(max_age_seconds);
-    if (cfg.google_redirect_uri.rfind("https://", 0) == 0) {
+    if (cfg.https()) {
         attrs += "; Secure";
     }
     return attrs;
@@ -251,7 +274,7 @@ std::string cookie_attrs(const Config& cfg, int max_age_seconds) {
 
 std::string clear_cookie_attrs(const Config& cfg) {
     std::string attrs = "Path=/; HttpOnly; SameSite=Lax; Max-Age=0";
-    if (cfg.google_redirect_uri.rfind("https://", 0) == 0) {
+    if (cfg.https()) {
         attrs += "; Secure";
     }
     return attrs;
@@ -282,7 +305,10 @@ std::optional<std::string> get_cookie(const crow::request& req, const std::strin
     return std::nullopt;
 }
 
+bool g_google_enabled = false;  // set in main()
+
 std::optional<User> current_user(Db& db, const crow::request& req) {
+    if (!g_google_enabled) return std::nullopt;  // no sign-in: everyone is anonymous
     auto token = get_cookie(req, kSessionCookie);
     if (!token) return std::nullopt;
     auto user = db.find_user_by_session(*token);
@@ -389,6 +415,17 @@ struct TooBig : std::runtime_error {
     using std::runtime_error::runtime_error;
 };
 
+void check_run_size(const PivotResult& pivot) {
+    std::set<std::string> parts;
+    for (const auto& r : pivot.records) parts.insert(r.element_id);
+    if (pivot.records.size() > kMaxLabels || parts.size() > kMaxParts) {
+        throw TooBig("this sheet has " + std::to_string(pivot.records.size()) + " labels and " +
+                     std::to_string(parts.size()) + " parts; the limit is " +
+                     std::to_string(kMaxLabels) + " labels / " + std::to_string(kMaxParts) +
+                     " parts per run");
+    }
+}
+
 // Fetches the "Order Here" tab for a sheet the user owns, pivots it, and
 // adds BrickLink data. Shared by every generate route. Throws std::runtime_error (from
 // mint_access_token / oauth calls) on any Google API failure — callers turn
@@ -406,14 +443,28 @@ PivotResult fetch_and_pivot(const Config& cfg, Db& db, int64_t user_id,
     std::vector<std::vector<std::string>> rows =
         oauth::fetch_sheet_values(access_token, spreadsheet_id, range);
     PivotResult pivot = pivot_sheet(rows);
-    std::set<std::string> parts;
-    for (const auto& r : pivot.records) parts.insert(r.element_id);
-    if (pivot.records.size() > kMaxLabels || parts.size() > kMaxParts) {
-        throw TooBig("this sheet has " + std::to_string(pivot.records.size()) + " labels and " +
-                     std::to_string(parts.size()) + " parts; the limit is " +
-                     std::to_string(kMaxLabels) + " labels / " + std::to_string(kMaxParts) +
-                     " parts per run");
+    check_run_size(pivot);
+    apply_bricklink(pivot);
+    return pivot;
+}
+
+// Pivots an uploaded .xlsx or .csv (see spreadsheet.h). For a workbook,
+// uses the "Order Here" tab, or failing that the first tab with orders on
+// it. Throws spreadsheet::Error (bad file) or TooBig.
+PivotResult pivot_upload(const std::string& data) {
+    PivotResult pivot;
+    if (spreadsheet::is_xlsx(data)) {
+        for (auto& rows : spreadsheet::read_xlsx(data, layout::kSourceTab)) {
+            if (rows.size() > static_cast<size_t>(kMaxSheetRows)) rows.resize(kMaxSheetRows);
+            pivot = pivot_sheet(rows);
+            if (!pivot.records.empty()) break;
+        }
+    } else {
+        auto rows = spreadsheet::read_csv(data);
+        if (rows.size() > static_cast<size_t>(kMaxSheetRows)) rows.resize(kMaxSheetRows);
+        pivot = pivot_sheet(rows);
     }
+    check_run_size(pivot);
     apply_bricklink(pivot);
     return pivot;
 }
@@ -552,16 +603,20 @@ int main() {
 
     Guards guards(cfg);
     g_guards = &guards;
+    g_google_enabled = cfg.google_enabled();
+    if (!cfg.google_enabled()) {
+        std::cerr << "Google sign-in is off (no GOOGLE_OAUTH_CLIENT_ID): uploads only" << std::endl;
+    }
     bricklink::CatalogCache catalog(cfg.data_dir + "/bricklink");
     g_catalog = &catalog;
-    if (guards.allowlist.empty()) {
+    if (cfg.google_enabled() && guards.allowlist.empty()) {
         std::cerr << "warning: ALLOWED_EMAILS is not set — any Google account that can pass "
                      "the OAuth consent screen can sign in" << std::endl;
     }
 
     App app;
     app.get_middleware<SecurityMiddleware>().origin = app_origin(cfg);
-    app.get_middleware<SecurityMiddleware>().https = cfg.google_redirect_uri.rfind("https://", 0) == 0;
+    app.get_middleware<SecurityMiddleware>().https = cfg.https();
     // Crow's default INFO access log prints the full request path, which
     // for /auth/callback includes the (single-use, but still sensitive)
     // authorization code and session-bound state as a query string. Drop
@@ -580,19 +635,19 @@ int main() {
     CROW_ROUTE(app, "/version")([version]() { return crow::response(200, version); });
 
     CROW_ROUTE(app, "/")([&, version](const crow::request& req) {
+        // Signed in: saved Google Sheets plus uploads. Not signed in (or no
+        // Google configured): uploads only, plus a sign-in button if Google
+        // is available.
         auto user = current_user(*db, req);
-        if (!user) {
-            crow::response res(302);
-            res.set_header("Location", local_url(cfg, "/auth/login"));
-            return res;
-        }
         // Mustache HTML-escapes {{email}} automatically, so a display name
         // containing markup can't break out of the page.
         auto tmpl = crow::mustache::load("dashboard.html");
         crow::mustache::context ctx;
         std::string nonce = crypto::random_hex_token(16);
         ctx["nonce"] = nonce;
-        ctx["email"] = user->email;
+        ctx["signed_in"] = user.has_value();
+        ctx["google"] = cfg.google_enabled();
+        ctx["email"] = user ? user->email : std::string();
         ctx["version"] = version;
         // Label stock picker: one <optgroup> per brand + page size.
         std::vector<crow::json::wvalue> groups;
@@ -639,6 +694,7 @@ int main() {
     // against CSRF (an attacker linking a victim straight into /auth/callback
     // with an authorization code of the attacker's own account).
     CROW_ROUTE(app, "/auth/login")([&cfg](const crow::request&) {
+        if (!cfg.google_enabled()) return crow::response(404, "Google sign-in isn't set up on this server.");
         std::string state = crypto::random_hex_token(24);
         std::string url = oauth::build_authorize_url(cfg, state, /*force_consent=*/true);
 
@@ -651,6 +707,7 @@ int main() {
 
     // Step 2: Google redirects back here with ?code=...&state=....
     CROW_ROUTE(app, "/auth/callback")([&cfg, &db](const crow::request& req) {
+        if (!cfg.google_enabled()) return crow::response(404, "Google sign-in isn't set up on this server.");
         if (req.url_params.get("error")) {
             // User declined consent, or Google reported a problem. Not
             // echoed back: it's attacker-controllable query text.
@@ -908,8 +965,7 @@ int main() {
     // enough to re-render on every switch flip.
     CROW_ROUTE(app, "/preview")([&cfg, &db](const crow::request& req) {
         auto user = current_user(*db, req);
-        if (!user) return crow::response(401, "not logged in");
-        if (auto retry = g_guards->preview_per_user.take(std::to_string(user->id))) {
+        if (auto retry = g_guards->preview_per_user.take(visitor_key(req, user))) {
             return too_many(*retry, "Preview is updating too fast — wait a moment.");
         }
         std::string error;
@@ -928,8 +984,7 @@ int main() {
     // Printer alignment test page for a label stock.
     CROW_ROUTE(app, "/test-page")([&db](const crow::request& req) {
         auto user = current_user(*db, req);
-        if (!user) return crow::response(401, "not logged in");
-        if (auto retry = g_guards->preview_per_user.take(std::to_string(user->id))) {
+        if (auto retry = g_guards->preview_per_user.take(visitor_key(req, user))) {
             return too_many(*retry, "Too fast — wait a moment.");
         }
         const char* spec_id = req.url_params.get("spec");
@@ -1134,6 +1189,92 @@ int main() {
                     count);
             });
         });
+
+    // --- Uploads: anyone, signed in or not ---------------------------------
+    // The request body is the .xlsx or .csv file itself; the design comes
+    // from the query string (spec/order/hide) and `X-File-Name` (optional)
+    // names the download. The file is read in memory and never stored.
+    auto upload = [&cfg](const crow::request& req, auto render) {
+        auto admission = start_anonymous_job(client_ip(req));
+        if (!admission.ticket) return std::move(admission.refused);
+        if (req.body.empty()) return crow::response(400, "Choose an .xlsx or .csv file first.");
+        std::string error;
+        auto design = resolve_design(std::nullopt, req, &error);
+        if (!design) return crow::response(400, error);
+        // Download names follow the uploaded file's, minus its extension.
+        std::string name = req.get_header_value("X-File-Name");
+        if (size_t dot = name.rfind('.'); dot != std::string::npos) name.resize(dot);
+        std::string stem = safe_filename_stem(name);
+        if (stem == "sheet") stem = "order sheet";
+        try {
+            PivotResult pivot = pivot_upload(req.body);
+            if (pivot.records.empty() && !render.allows_empty) {
+                return crow::response(422, std::string("No orders found in that file — it needs the '") +
+                                               layout::kSourceTab +
+                                               "' tab's columns (Element ID / Part Number and a "
+                                               "column per person). Try Check file to see why.");
+            }
+            return render.fn(pivot, *design, stem);
+        } catch (const spreadsheet::Error& e) {
+            return crow::response(400, e.what());
+        } catch (const TooBig& e) {
+            return crow::response(413, std::string("Too big: ") + e.what() + ".");
+        } catch (const std::exception& e) {
+            std::cerr << "upload failed: " << e.what() << std::endl;
+            return crow::response(500, "Couldn't read that file — try again.");
+        }
+    };
+    struct Render {
+        bool allows_empty;
+        std::function<crow::response(PivotResult&, const EffectiveDesign&, const std::string&)> fn;
+    };
+    const std::string image_cache = cfg.data_dir + "/image_cache";
+
+    CROW_ROUTE(app, "/upload/check").methods(crow::HTTPMethod::Post)([&](const crow::request& req) {
+        return upload(req, Render{true, [](PivotResult& pivot, const EffectiveDesign&, const std::string&) {
+            crow::response res(200, sheet_error_json(pivot));
+            res.set_header("Content-Type", "application/json");
+            return res;
+        }});
+    });
+    CROW_ROUTE(app, "/upload/labels").methods(crow::HTTPMethod::Post)([&](const crow::request& req) {
+        return upload(req, Render{false, [&](PivotResult& pivot, const EffectiveDesign& d,
+                                             const std::string& stem) {
+            auto records = ordering::order_records(std::move(pivot.records), d.order);
+            return attachment("application/pdf", stem + " labels.pdf",
+                              as_string(labels_pdf::build_labels_pdf(records, image_cache, *d.spec,
+                                                                     d.options)));
+        }});
+    });
+    CROW_ROUTE(app, "/upload/checklist").methods(crow::HTTPMethod::Post)([&](const crow::request& req) {
+        return upload(req, Render{false, [](PivotResult& pivot, const EffectiveDesign& d,
+                                            const std::string& stem) {
+            auto records = ordering::order_records(std::move(pivot.records), d.order);
+            return attachment("application/pdf", stem + " packing checklist.pdf",
+                              as_string(reports::checklist_pdf(records)));
+        }});
+    });
+    CROW_ROUTE(app, "/upload/parts").methods(crow::HTTPMethod::Post)([&](const crow::request& req) {
+        bool csv = req.url_params.get("format") && std::string(req.url_params.get("format")) == "csv";
+        return upload(req, Render{false, [csv](PivotResult& pivot, const EffectiveDesign& d,
+                                               const std::string& stem) {
+            auto parts = ordering::summarize_parts(pivot.records, d.order);
+            return csv ? attachment("text/csv; charset=utf-8", stem + " parts.csv", reports::parts_csv(parts))
+                       : attachment("application/pdf", stem + " parts.pdf",
+                                    as_string(reports::parts_pdf(parts)));
+        }});
+    });
+    CROW_ROUTE(app, "/upload/lots").methods(crow::HTTPMethod::Post)([&](const crow::request& req) {
+        bool csv = req.url_params.get("format") && std::string(req.url_params.get("format")) == "csv";
+        return upload(req, Render{false, [csv](PivotResult& pivot, const EffectiveDesign&,
+                                               const std::string& stem) {
+            const auto sort = reports::SortBy::kLastName;
+            return csv ? attachment("text/csv; charset=utf-8", stem + " lot counts.csv",
+                                    reports::lot_counts_csv(pivot.records, sort))
+                       : attachment("application/pdf", stem + " lot counts.pdf",
+                                    as_string(reports::lot_counts_pdf(pivot.records, sort)));
+        }});
+    });
 
     app.port(8080).multithreaded().run();
 }

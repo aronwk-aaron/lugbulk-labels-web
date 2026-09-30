@@ -12,6 +12,7 @@
 #include <fstream>
 #include <functional>
 #include <iostream>
+#include <iterator>
 #include <string>
 #include <vector>
 
@@ -22,6 +23,7 @@
 #include "rate_limits.h"
 #include "db.h"
 #include "samples.h"
+#include "spreadsheet.h"
 #include "ordering.h"
 #include "reports.h"
 #include "sheet_layout.h"
@@ -441,6 +443,58 @@ void test_design_storage() {
     rmdir(dir.c_str());
 }
 
+std::string read_file(const std::string& path) {
+    std::ifstream in(path, std::ios::binary);
+    return std::string(std::istreambuf_iterator<char>(in), {});
+}
+
+void test_spreadsheet_uploads() {
+    // The CLI's sample order sheet (2026 master layout, made-up names).
+    std::string xlsx = read_file(LUGBULK_FIXTURES "/sample_order.xlsx");
+    CHECK(spreadsheet::is_xlsx(xlsx));
+    auto sheets = spreadsheet::read_xlsx(xlsx, layout::kSourceTab);  // tab is "OrderHere"
+    CHECK_EQ(sheets.size(), size_t{1});
+    if (!sheets.empty()) {
+        PivotResult r = pivot_sheet(sheets[0]);
+        CHECK_EQ(r.records.size(), size_t{6});
+        CHECK(r.issues.empty());
+        bool found = false;
+        for (const auto& rec : r.records) {
+            if (rec.element_id == "4211388" && rec.person == "Bob Roe") {
+                found = rec.qty == "25" && rec.lego_color == "Medium Stone Grey";
+            }
+        }
+        CHECK(found);
+    }
+
+    std::string csv = "\xEF\xBB\xBF#,Element ID,Photo,Description,BL Color,Cost,Total,Ann Lee,\r\n"
+                      ",,,,,,,qty,$$\r\n"
+                      "1,4211388,,\"BRICK 1X2, GREY\",Light Bluish Gray,0.05,,\"2,000\",$1\r\n";
+    CHECK(!spreadsheet::is_xlsx(csv));
+    auto rows = spreadsheet::read_csv(csv);
+    CHECK_EQ(rows.size(), size_t{3});
+    PivotResult r = pivot_sheet(rows);
+    CHECK(r.records.size() == 1 && r.records[0].qty == "2000" &&
+          r.records[0].description == "BRICK 1X2, GREY");
+
+    // A zip bomb (70 MB of spaces, ~70 KB compressed) is refused, not unpacked.
+    bool refused = false;
+    try {
+        spreadsheet::read_xlsx(read_file(LUGBULK_FIXTURES "/bomb.xlsx"), layout::kSourceTab);
+    } catch (const spreadsheet::Error& e) {
+        refused = std::string(e.what()).find("64 MB") != std::string::npos;
+    }
+    CHECK(refused);
+
+    bool garbage = false;
+    try {
+        spreadsheet::read_xlsx("PK\x03\x04 not really a zip", layout::kSourceTab);
+    } catch (const spreadsheet::Error&) {
+        garbage = true;
+    }
+    CHECK(garbage);
+}
+
 int main() {
     layout::load_label_specs(LUGBULK_LABEL_SPECS_PATH);
     const std::pair<const char*, std::function<void()>> tests[] = {
@@ -456,6 +510,7 @@ int main() {
         {"bricklink_catalog", test_bricklink_catalog},
         {"placeholder_color_and_catalog_weight", test_placeholder_color_and_catalog_weight},
         {"label_specs", test_label_specs},
+        {"spreadsheet_uploads", test_spreadsheet_uploads},
         {"rate_limits", test_rate_limits},
         {"label_options_and_extras", test_label_options_and_extras},
         {"design_storage", test_design_storage},
