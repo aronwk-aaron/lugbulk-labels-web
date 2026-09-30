@@ -19,6 +19,16 @@ set(CROW_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
 set(CROW_BUILD_TESTS OFF CACHE BOOL "" FORCE)
 FetchContent_MakeAvailable(Crow)
 
+# --- QR codes on labels: Nayuki's QR Code generator (MIT), C++ port ---
+FetchContent_Declare(
+    qrcodegen
+    GIT_REPOSITORY https://github.com/nayuki/QR-Code-generator.git
+    GIT_TAG v1.8.0
+)
+FetchContent_MakeAvailable(qrcodegen)  # no CMakeLists of its own: just fetched; built below
+add_library(qrcodegen STATIC ${qrcodegen_SOURCE_DIR}/cpp/qrcodegen.cpp)
+target_include_directories(qrcodegen PUBLIC ${qrcodegen_SOURCE_DIR}/cpp)
+
 find_package(Threads REQUIRED)
 find_package(OpenSSL REQUIRED)      # OAuth token exchange (HTTPS client) + Crow SSL support
 find_package(SQLite3 REQUIRED)      # sessions / users / sheets / run log
@@ -50,6 +60,7 @@ add_library(lugbulk_core STATIC
     src/reports.cpp
     src/labels_pdf.cpp
     src/rate_limits.cpp
+    src/samples.cpp
     src/pdf_text.cpp
 )
 
@@ -66,6 +77,7 @@ target_link_libraries(lugbulk_core PUBLIC
     SQLite::SQLite3
     CURL::libcurl
     JPEG::JPEG
+    qrcodegen
     ${PODOFO_LIBRARY}
 )
 
@@ -78,7 +90,8 @@ if(LUGBULK_BUILD_TESTS)
     enable_testing()
     add_executable(lugbulk_tests tests/tests.cpp)
     target_compile_definitions(lugbulk_tests PRIVATE
-        LUGBULK_LABEL_SPECS_PATH="${CMAKE_SOURCE_DIR}/data/label_specs.json")
+        LUGBULK_LABEL_SPECS_PATH="${CMAKE_SOURCE_DIR}/data/label_specs.json"
+        LUGBULK_SCHEMA_PATH="${CMAKE_SOURCE_DIR}/sql/schema.sql")
     target_link_libraries(lugbulk_tests PRIVATE lugbulk_core)
     add_test(NAME lugbulk_tests COMMAND lugbulk_tests)
 endif()

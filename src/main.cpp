@@ -16,6 +16,11 @@
 //   POST   /sheets/:id/lots     lot counts per person, ?format=csv (default) or pdf
 //   POST   /sheets/:id/parts    parts list (pieces + people per part), ?format=csv|pdf&order=
 //   GET    /sheets/:id/history  recent generate runs for a sheet (JSON)
+//   POST   /sheets/:id/checklist  packing checklist PDF
+//   GET    /sheets/:id/design   the sheet's saved label design (JSON)
+//   PUT    /sheets/:id/design   save it: {"spec","order","hide"}
+//   GET    /preview             one page of sample labels (?spec=&order=&hide=)
+//   GET    /test-page           printer alignment page for a stock (?spec=)
 //
 // See sql/schema.sql for the users/sheets/runs/sessions tables.
 
@@ -25,6 +30,9 @@
 
 #include <algorithm>
 #include <atomic>
+#include <condition_variable>
+#include <deque>
+#include <thread>
 #include <cctype>
 #include <ctime>
 #include <future>
@@ -42,6 +50,7 @@
 #include "db.h"
 #include "labels_pdf.h"
 #include "rate_limits.h"
+#include "samples.h"
 #include "oauth.h"
 #include "ordering.h"
 #include "reports.h"
@@ -94,6 +103,8 @@ struct Guards {
     limits::RateLimiter search_per_user{10, 1.0 / 3};
     // Reports (and Check sheet), per user: 6, then one per 2 minutes.
     limits::RateLimiter jobs_per_user{6, 1.0 / 120};
+    // Live design preview and alignment test page, per user: 20, then 1/second.
+    limits::RateLimiter preview_per_user{20, 1};
     limits::JobGate jobs;
     limits::DailyBudget bricklink_calls;
     limits::Allowlist allowlist;
@@ -189,7 +200,7 @@ struct SecurityMiddleware {
         res.set_header("Content-Security-Policy",
                        "default-src 'self'; script-src 'self' 'unsafe-inline'; "
                        "style-src 'self' 'unsafe-inline'; img-src 'self' data:; "
-                       "frame-ancestors 'none'; base-uri 'none'; form-action 'self'");
+                       "frame-src blob:; frame-ancestors 'none'; base-uri 'none'; form-action 'self'");
     }
 };
 
@@ -433,6 +444,74 @@ PivotResult fetch_and_pivot(const Config& cfg, Db& db, int64_t user_id,
     return pivot;
 }
 
+// The label design for a request: the sheet's saved design (or the
+// defaults), with any spec/order/hide query parameters on top.
+struct EffectiveDesign {
+    const layout::LabelSpec* spec;
+    ordering::PartOrder order;
+    labels_pdf::LabelOptions options;
+};
+
+std::optional<EffectiveDesign> resolve_design(const std::optional<Design>& saved,
+                                              const crow::request& req, std::string* error) {
+    auto param = [&](const char* name, const std::string& fallback) {
+        const char* v = req.url_params.get(name);
+        return v ? std::string(v) : fallback;
+    };
+    std::string spec_id = param("spec", saved ? saved->label_spec : layout::kDefaultLabelSpecId);
+    std::string order_name = param("order", saved ? saved->part_order : "heaviest");
+    std::string hide = param("hide", saved ? saved->hidden_parts : labels_pdf::LabelOptions().hidden_csv());
+
+    const layout::LabelSpec* spec = layout::find_label_spec(spec_id);
+    if (!spec) spec = &layout::default_label_spec();  // a saved stock that's since been dropped
+    auto order = ordering::parse_part_order(order_name);
+    if (!order) {
+        *error = "order must be heaviest, lightest or sheet";
+        return std::nullopt;
+    }
+    // `hide` is the full list of parts switched off.
+    auto options = labels_pdf::LabelOptions::from_hidden(hide, error);
+    if (!options) return std::nullopt;
+    return EffectiveDesign{spec, *order, *options};
+}
+
+// Looks a newly saved sheet's parts up on BrickLink in the background, so
+// the first real print doesn't wait on them. One worker thread, a short
+// queue, and no retries: it's only a head start.
+class BackgroundRefresher {
+public:
+    BackgroundRefresher(const Config& cfg, Db& db) : cfg_(cfg), db_(db) {
+        if (cfg_.bricklink.complete()) thread_ = std::thread([this] { run(); });
+    }
+    ~BackgroundRefresher() {
+        {
+            std::lock_guard<std::mutex> lock(mu_);
+            stop_ = true;
+        }
+        cv_.notify_one();
+        if (thread_.joinable()) thread_.join();
+    }
+
+    void enqueue(int64_t user_id, const std::string& google_sheet_id) {
+        if (!thread_.joinable()) return;  // no BrickLink credentials: nothing to do
+        std::lock_guard<std::mutex> lock(mu_);
+        if (queue_.size() >= 16) return;  // busy: the first print will do it
+        queue_.emplace_back(user_id, google_sheet_id);
+        cv_.notify_one();
+    }
+
+private:
+    void run();
+
+    const Config& cfg_;
+    Db& db_;
+    std::mutex mu_;
+    std::condition_variable cv_;
+    std::deque<std::pair<int64_t, std::string>> queue_;
+    bool stop_ = false;
+    std::thread thread_;
+};
+
 // Turns a failed Google call into a response the organizer can act on.
 crow::response google_error(const std::exception& e) {
     if (auto* big = dynamic_cast<const TooBig*>(&e)) {
@@ -457,6 +536,25 @@ crow::response google_error(const std::exception& e) {
         }
     }
     return crow::response(502, "Couldn't reach Google Sheets — try again in a minute.");
+}
+
+void BackgroundRefresher::run() {
+    for (;;) {
+        std::pair<int64_t, std::string> job;
+        {
+            std::unique_lock<std::mutex> lock(mu_);
+            cv_.wait(lock, [&] { return stop_ || !queue_.empty(); });
+            if (stop_) return;
+            job = queue_.front();
+            queue_.pop_front();
+        }
+        try {
+            fetch_and_pivot(cfg_, db_, job.first, job.second);  // caches BrickLink data
+        } catch (const std::exception& e) {
+            std::cerr << "background refresh failed for user " << job.first << ": " << e.what()
+                      << std::endl;
+        }
+    }
 }
 
 std::string sheet_error_json(const PivotResult& pivot) {
@@ -530,6 +628,7 @@ int main() {
 
     Guards guards(cfg);
     g_guards = &guards;
+    BackgroundRefresher refresher(cfg, *db);
     if (guards.allowlist.empty()) {
         std::cerr << "warning: ALLOWED_EMAILS is not set — any Google account that can pass "
                      "the OAuth consent screen can sign in" << std::endl;
@@ -765,7 +864,7 @@ int main() {
     // generate time will fail cleanly if it's bogus or access was revoked,
     // and re-checking on every save just doubles the Google round trips.
     CROW_ROUTE(app, "/sheets").methods(crow::HTTPMethod::Post)(
-        [&db](const crow::request& req) {
+        [&cfg, &db, &refresher](const crow::request& req) {
             auto user = current_user(*db, req);
             if (!user) return crow::response(401, "not logged in");
 
@@ -786,8 +885,24 @@ int main() {
                 return crow::response(409, "You have " + std::to_string(kMaxSavedSheets) +
                                                " saved sheets — remove one first.");
             }
+            if (auto retry = g_guards->search_per_user.take(std::to_string(user->id))) {
+                return too_many(*retry, "Adding sheets too fast — wait a few seconds.");
+            }
+            // Only save sheets the user can actually open. Besides catching
+            // typos, this is what lets a sheet's shared label design be
+            // edited only by people with access to that sheet.
+            try {
+                oauth::fetch_spreadsheet_title(mint_access_token(cfg, *db, user->id), sheet_id);
+            } catch (const std::exception& e) {
+                if (auto* http = dynamic_cast<const oauth::HttpError*>(&e);
+                    http && (http->status == 403 || http->status == 404)) {
+                    return crow::response(403, "Your Google account can't open that sheet.");
+                }
+                return google_error(e);
+            }
             try {
                 Sheet saved = db->add_sheet(user->id, sheet_id, display_name);
+                refresher.enqueue(user->id, saved.sheet_id);
                 std::string body = "{\"row_id\":" + std::to_string(saved.id) + ",";
                 body += "\"sheet_id\":\"" + json_escape(saved.sheet_id) + "\",";
                 body += "\"display_name\":\"" + json_escape(saved.display_name) + "\"}";
@@ -856,6 +971,44 @@ int main() {
         return res;
     });
 
+    // Live design preview: one page of built-in sample labels in the given
+    // stock and design (spec, order, hide). No sheet is read, so it's cheap
+    // enough to re-render on every switch flip.
+    CROW_ROUTE(app, "/preview")([&cfg, &db](const crow::request& req) {
+        auto user = current_user(*db, req);
+        if (!user) return crow::response(401, "not logged in");
+        if (auto retry = g_guards->preview_per_user.take(std::to_string(user->id))) {
+            return too_many(*retry, "Preview is updating too fast — wait a moment.");
+        }
+        std::string error;
+        auto design = resolve_design(std::nullopt, req, &error);
+        if (!design) return crow::response(400, error);
+        auto records = samples::sample_records();
+        // Roll stock is one label per page: show a few.
+        size_t pages = design->spec->per_sheet() == 1 ? 3 : 1;
+        auto pdf = labels_pdf::build_labels_pdf(records, cfg.data_dir + "/image_cache", *design->spec,
+                                                design->options, pages);
+        crow::response res(200, as_string(pdf));
+        res.set_header("Content-Type", "application/pdf");
+        res.set_header("Cache-Control", "no-store");
+        return res;
+    });
+
+    // Printer alignment test page for a label stock.
+    CROW_ROUTE(app, "/test-page")([&db](const crow::request& req) {
+        auto user = current_user(*db, req);
+        if (!user) return crow::response(401, "not logged in");
+        if (auto retry = g_guards->preview_per_user.take(std::to_string(user->id))) {
+            return too_many(*retry, "Too fast — wait a moment.");
+        }
+        const char* spec_id = req.url_params.get("spec");
+        const layout::LabelSpec* spec = spec_id ? layout::find_label_spec(spec_id)
+                                                : &layout::default_label_spec();
+        if (!spec) return crow::response(400, "unknown label stock");
+        return attachment("application/pdf", spec->id + " alignment test.pdf",
+                          as_string(labels_pdf::build_test_page(*spec)));
+    });
+
     // Every generate route: owner check, fetch + pivot, render, log the
     // run. `render` gets the pivot result and returns the response (or
     // throws). Synchronous — the file only ever exists in memory and the
@@ -889,7 +1042,7 @@ int main() {
         }
 
         try {
-            auto [res, item_count] = render(pivot, owned->display_name);
+            auto [res, item_count] = render(pivot, *owned);
             db->log_run(owned->sheet_row_id, report_type, item_count, "ok", nullptr);
             return std::move(res);
         } catch (const std::exception& e) {
@@ -901,29 +1054,83 @@ int main() {
         }
     };
 
-    auto part_order_param = [](const crow::request& req) {
-        const char* order = req.url_params.get("order");
-        return ordering::parse_part_order(order ? order : "heaviest");
-    };
 
+    // Labels in the sheet's saved design; spec/order/hide query parameters
+    // override it for this download.
     CROW_ROUTE(app, "/sheets/<int>/labels").methods(crow::HTTPMethod::Post)(
         [&](const crow::request& req, int64_t row_id) {
-            const char* spec_id = req.url_params.get("spec");
-            const layout::LabelSpec* spec =
-                spec_id ? layout::find_label_spec(spec_id) : &layout::default_label_spec();
-            auto order = part_order_param(req);
-            if (!spec) return crow::response(400, "unknown label spec");
-            if (!order) return crow::response(400, "order must be heaviest, lightest or sheet");
-
-            return generate(req, row_id, "labels", [&](PivotResult& pivot, const std::string& name) {
-                auto records = ordering::order_records(std::move(pivot.records), *order);
-                std::vector<uint8_t> pdf =
-                    labels_pdf::build_labels_pdf(records, cfg.data_dir + "/image_cache", *spec);
+            return generate(req, row_id, "labels", [&](PivotResult& pivot, const SheetOwnership& sheet) {
+                std::string error;
+                auto design = resolve_design(db->get_design(sheet.sheet_id), req, &error);
+                if (!design) return std::make_pair(crow::response(400, error), 0);
+                auto records = ordering::order_records(std::move(pivot.records), design->order);
+                std::vector<uint8_t> pdf = labels_pdf::build_labels_pdf(
+                    records, cfg.data_dir + "/image_cache", *design->spec, design->options);
                 return std::make_pair(
-                    attachment("application/pdf", safe_filename_stem(name) + " labels.pdf",
+                    attachment("application/pdf", safe_filename_stem(sheet.display_name) + " labels.pdf",
                                as_string(pdf)),
                     static_cast<int>(records.size()));
             });
+        });
+
+    // Packing checklist: one page per person, in label order.
+    CROW_ROUTE(app, "/sheets/<int>/checklist").methods(crow::HTTPMethod::Post)(
+        [&](const crow::request& req, int64_t row_id) {
+            return generate(req, row_id, "checklist", [&](PivotResult& pivot, const SheetOwnership& sheet) {
+                std::string error;
+                auto design = resolve_design(db->get_design(sheet.sheet_id), req, &error);
+                if (!design) return std::make_pair(crow::response(400, error), 0);
+                auto records = ordering::order_records(std::move(pivot.records), design->order);
+                return std::make_pair(
+                    attachment("application/pdf",
+                               safe_filename_stem(sheet.display_name) + " packing checklist.pdf",
+                               as_string(reports::checklist_pdf(records))),
+                    static_cast<int>(records.size()));
+            });
+        });
+
+    // The sheet's label design (shared by everyone who has the sheet saved).
+    CROW_ROUTE(app, "/sheets/<int>/design")([&db](const crow::request& req, int64_t row_id) {
+        auto user = current_user(*db, req);
+        if (!user) return crow::response(401, "not logged in");
+        auto owned = db->find_owned_sheet(user->id, row_id);
+        if (!owned) return crow::response(404, "sheet not found");
+        std::string error;
+        auto design = resolve_design(db->get_design(owned->sheet_id), crow::request(), &error);
+        crow::json::wvalue body;
+        body["spec"] = design->spec->id;
+        body["order"] = std::string(design->order == ordering::PartOrder::kHeaviest   ? "heaviest"
+                                    : design->order == ordering::PartOrder::kLightest ? "lightest"
+                                                                                      : "sheet");
+        body["hide"] = design->options.hidden_csv();
+        crow::response res(200, body.dump());
+        res.set_header("Content-Type", "application/json");
+        return res;
+    });
+
+    CROW_ROUTE(app, "/sheets/<int>/design").methods(crow::HTTPMethod::Put)(
+        [&db](const crow::request& req, int64_t row_id) {
+            auto user = current_user(*db, req);
+            if (!user) return crow::response(401, "not logged in");
+            auto owned = db->find_owned_sheet(user->id, row_id);
+            if (!owned) return crow::response(404, "sheet not found");
+            if (auto retry = g_guards->preview_per_user.take(std::to_string(user->id))) {
+                return too_many(*retry, "Saving too fast — wait a moment.");
+            }
+            auto json = crow::json::load(req.body);
+            if (!json || !json.has("spec") || !json.has("order") || !json.has("hide")) {
+                return crow::response(400, R"(expected {"spec":..., "order":..., "hide":"..."})");
+            }
+            const layout::LabelSpec* spec = layout::find_label_spec(std::string(json["spec"].s()));
+            std::string order = json["order"].s();
+            std::string hide = json["hide"].s();
+            std::string error;
+            if (!spec) return crow::response(400, "unknown label stock");
+            if (!ordering::parse_part_order(order)) return crow::response(400, "bad part order");
+            auto opts = labels_pdf::LabelOptions::from_hidden(hide, &error);
+            if (!opts) return crow::response(400, error);
+            db->put_design(owned->sheet_id, Design{spec->id, order, opts->hidden_csv()}, user->id);
+            return crow::response(200, "saved");
         });
 
     auto format_param = [](const crow::request& req) -> std::optional<std::string> {
@@ -939,7 +1146,8 @@ int main() {
             if (!format) return crow::response(400, "format must be 'csv' or 'pdf'");
 
             return generate(req, row_id, "lot_counts",
-                            [&](PivotResult& pivot, const std::string& name) {
+                            [&](PivotResult& pivot, const SheetOwnership& sheet) {
+                const std::string& name = sheet.display_name;
                 const auto sort = reports::SortBy::kLastName;
                 int people = static_cast<int>(reports::lot_counts_by_person(pivot.records, sort).size());
                 std::string stem = safe_filename_stem(name) + " lot counts";
@@ -958,12 +1166,14 @@ int main() {
     CROW_ROUTE(app, "/sheets/<int>/parts").methods(crow::HTTPMethod::Post)(
         [&](const crow::request& req, int64_t row_id) {
             auto format = format_param(req);
-            auto order = part_order_param(req);
             if (!format) return crow::response(400, "format must be 'csv' or 'pdf'");
-            if (!order) return crow::response(400, "order must be heaviest, lightest or sheet");
 
-            return generate(req, row_id, "parts", [&](PivotResult& pivot, const std::string& name) {
-                auto parts = ordering::summarize_parts(pivot.records, *order);
+            return generate(req, row_id, "parts", [&](PivotResult& pivot, const SheetOwnership& sheet) {
+                const std::string& name = sheet.display_name;
+                std::string error;
+                auto design = resolve_design(db->get_design(sheet.sheet_id), req, &error);
+                if (!design) return std::make_pair(crow::response(400, error), 0);
+                auto parts = ordering::summarize_parts(pivot.records, design->order);
                 int count = static_cast<int>(parts.size());
                 std::string stem = safe_filename_stem(name) + " parts";
                 if (*format == "csv") {

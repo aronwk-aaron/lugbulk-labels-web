@@ -143,15 +143,16 @@ void Db::migrate() {
         Stmt s(db_, "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'runs';");
         if (s.step()) runs_sql = s.column_text(0);
     }
-    // v1 runs.report_type CHECK didn't allow 'parts'. SQLite can't alter a
-    // CHECK constraint, so rebuild the table.
-    if (!runs_sql.empty() && runs_sql.find("'parts'") == std::string::npos) {
+    // Older runs.report_type CHECKs lacked 'parts' / 'checklist'. SQLite
+    // can't alter a CHECK constraint, so rebuild the table.
+    if (!runs_sql.empty() && runs_sql.find("'checklist'") == std::string::npos) {
         const char* sql =
             "BEGIN;"
             "CREATE TABLE runs_new ("
             "  id INTEGER PRIMARY KEY AUTOINCREMENT,"
             "  sheet_id INTEGER NOT NULL REFERENCES sheets(id) ON DELETE CASCADE,"
-            "  report_type TEXT NOT NULL CHECK (report_type IN ('labels', 'lot_counts', 'parts')),"
+            "  report_type TEXT NOT NULL CHECK (report_type IN ('labels', 'lot_counts', 'parts', "
+            "'checklist')),"
             "  generated_at TEXT NOT NULL DEFAULT (datetime('now')),"
             "  item_count INTEGER NOT NULL,"
             "  status TEXT NOT NULL CHECK (status IN ('ok', 'error')),"
@@ -359,6 +360,30 @@ std::optional<SheetOwnership> Db::find_owned_sheet(int64_t user_id, int64_t shee
     so.sheet_id = s.column_text(1);
     so.display_name = s.column_text(2);
     return so;
+}
+
+std::optional<Design> Db::get_design(const std::string& google_sheet_id) {
+    Stmt s(db_,
+           "SELECT label_spec, part_order, hidden_parts FROM sheet_designs "
+           "WHERE google_sheet_id = ?;");
+    s.bind_text(1, google_sheet_id);
+    if (!s.step()) return std::nullopt;
+    return Design{s.column_text(0), s.column_text(1), s.column_text(2)};
+}
+
+void Db::put_design(const std::string& google_sheet_id, const Design& design, int64_t user_id) {
+    Stmt s(db_,
+           "INSERT INTO sheet_designs (google_sheet_id, label_spec, part_order, hidden_parts, "
+           "  updated_by, updated_at) VALUES (?, ?, ?, ?, ?, datetime('now')) "
+           "ON CONFLICT(google_sheet_id) DO UPDATE SET label_spec = excluded.label_spec, "
+           "  part_order = excluded.part_order, hidden_parts = excluded.hidden_parts, "
+           "  updated_by = excluded.updated_by, updated_at = excluded.updated_at;");
+    s.bind_text(1, google_sheet_id);
+    s.bind_text(2, design.label_spec);
+    s.bind_text(3, design.part_order);
+    s.bind_text(4, design.hidden_parts);
+    s.bind_int64(5, user_id);
+    s.step();
 }
 
 std::vector<Run> Db::list_runs(int64_t sheet_row_id, int limit) {

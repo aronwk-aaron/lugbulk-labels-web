@@ -30,7 +30,7 @@ CREATE TABLE IF NOT EXISTS sheets (
 CREATE TABLE IF NOT EXISTS runs (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
     sheet_id      INTEGER NOT NULL REFERENCES sheets(id) ON DELETE CASCADE,
-    report_type   TEXT NOT NULL CHECK (report_type IN ('labels', 'lot_counts', 'parts')),
+    report_type   TEXT NOT NULL CHECK (report_type IN ('labels', 'lot_counts', 'parts', 'checklist')),
     generated_at  TEXT NOT NULL DEFAULT (datetime('now')),
     item_count    INTEGER NOT NULL,  -- labels, people, or parts, depending on report_type
     status        TEXT NOT NULL CHECK (status IN ('ok', 'error')),
@@ -64,4 +64,16 @@ CREATE TABLE IF NOT EXISTS bricklink_parts (
     color       TEXT NOT NULL DEFAULT '',
     weight      REAL,
     fetched_at  INTEGER NOT NULL  -- unix time
+);
+
+-- Label design per Google Sheet (label stock, part order, parts switched
+-- off), shared by everyone who has that sheet saved, so they all print the
+-- same labels. Keyed by the Google file id, not the per-user sheets row.
+CREATE TABLE IF NOT EXISTS sheet_designs (
+    google_sheet_id TEXT PRIMARY KEY,
+    label_spec      TEXT NOT NULL,
+    part_order      TEXT NOT NULL,
+    hidden_parts    TEXT NOT NULL,  -- comma-separated LabelPart names
+    updated_by      INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    updated_at      TEXT NOT NULL DEFAULT (datetime('now'))
 );

@@ -80,6 +80,11 @@ std::vector<SheetFile> list_spreadsheets(const std::string& access_token,
 // numbers come back display-formatted, e.g. "2,000" — callers must strip
 // thousands separators before parsing). Throws std::runtime_error on any
 // transport/HTTP failure or malformed response.
+// The spreadsheet's title — used to confirm the user can actually open a
+// sheet before saving it. Throws HttpError (403/404) if they can't.
+std::string fetch_spreadsheet_title(const std::string& access_token,
+                                    const std::string& spreadsheet_id);
+
 std::vector<std::vector<std::string>> fetch_sheet_values(const std::string& access_token,
                                                            const std::string& spreadsheet_id,
                                                            const std::string& range);

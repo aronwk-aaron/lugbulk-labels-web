@@ -124,10 +124,27 @@ namespace {
 // A simple paginated table PDF: title, subtitle, then a header row and
 // zebra-striped body rows, repeated per page. Cell text is shrunk/
 // truncated to fit its column.
+struct Section {
+    std::string title, subtitle;
+    std::vector<std::vector<std::string>> rows;
+};
+
+// Each section starts on a new page. With `checkbox_column`, column 0 of
+// every body row is drawn as an empty tick box instead of text.
+std::vector<uint8_t> sections_pdf(const std::vector<Section>& sections,
+                                  const std::vector<std::string>& headers,
+                                  const std::vector<double>& col_widths, bool checkbox_column);
+
 std::vector<uint8_t> table_pdf(const std::string& title, const std::string& subtitle,
                                const std::vector<std::string>& headers,
                                const std::vector<double>& col_widths,
                                const std::vector<std::vector<std::string>>& rows) {
+    return sections_pdf({{title, subtitle, rows}}, headers, col_widths, false);
+}
+
+std::vector<uint8_t> sections_pdf(const std::vector<Section>& sections,
+                                  const std::vector<std::string>& headers,
+                                  const std::vector<double>& col_widths, bool checkbox_column) {
     PoDoFo::PdfRefCountedBuffer buffer;
     PoDoFo::PdfOutputDevice device(&buffer);
     PoDoFo::PdfStreamedDocument doc(&device);
@@ -161,8 +178,14 @@ std::vector<uint8_t> table_pdf(const std::string& title, const std::string& subt
         painter.SetFont(font);
         double x = margin;
         for (size_t c = 0; c < cells.size() && c < col_widths.size(); ++c) {
-            std::string text = fit(font, cells[c], col_widths[c] - 6);
-            painter.DrawText(x + 3, y - 16 + 8, PoDoFo::PdfString(text.c_str()));
+            if (c == 0 && checkbox_column && font != font_bold) {
+                painter.SetStrokeWidth(0.8);
+                painter.Rectangle(x + 4, y - 16 + 6, 8, 8);
+                painter.Stroke();
+            } else {
+                std::string text = fit(font, cells[c], col_widths[c] - 6);
+                painter.DrawText(x + 3, y - 16 + 8, PoDoFo::PdfString(text.c_str()));
+            }
             x += col_widths[c];
         }
     };
@@ -171,6 +194,10 @@ std::vector<uint8_t> table_pdf(const std::string& title, const std::string& subt
     const int header_h_rows = 3;  // title + subtitle + spacer, in row units
     const int rows_per_page = std::max(
         1, static_cast<int>((page_h - 2 * margin) / row_h) - header_h_rows - 1 /* table header */);
+    for (const Section& section : sections) {
+    const std::string& title = section.title;
+    const std::string& subtitle = section.subtitle;
+    const auto& rows = section.rows;
     int total_pages = rows.empty() ? 1 : static_cast<int>(
         (rows.size() + rows_per_page - 1) / rows_per_page);
 
@@ -212,6 +239,10 @@ std::vector<uint8_t> table_pdf(const std::string& title, const std::string& subt
 
         painter.FinishPage();
     }
+    }  // sections
+    if (sections.empty()) {
+        doc.CreatePage(PoDoFo::PdfRect(0, 0, page_w, page_h));
+    }
 
     doc.Close();
 
@@ -242,6 +273,37 @@ std::vector<uint8_t> lot_counts_pdf(const std::vector<LabelRecord>& records, Sor
                            sort_label + " name";
     return table_pdf("Lot counts by person", subtitle, {"Person", "Lots", "Total pieces"},
                      {280, 100, 120}, rows);
+}
+
+std::vector<uint8_t> checklist_pdf(const std::vector<LabelRecord>& records) {
+    std::map<std::string, std::vector<const LabelRecord*>> by_person;
+    for (const auto& r : records) by_person[r.person].push_back(&r);
+    std::vector<std::string> people;
+    for (const auto& [person, _] : by_person) people.push_back(person);
+    std::sort(people.begin(), people.end(), [](const std::string& a, const std::string& b) {
+        return person_sort_key(a, SortBy::kLastName) < person_sort_key(b, SortBy::kLastName);
+    });
+
+    std::vector<Section> sections;
+    for (const auto& person : people) {
+        Section sec;
+        sec.title = person;
+        double pieces = 0;
+        for (const LabelRecord* r : by_person[person]) {
+            pieces += parse_qty(r->qty);
+            std::string colors = r->lego_color;
+            if (!r->bl_color.empty()) colors += (colors.empty() ? "" : " / ") + r->bl_color;
+            std::string label = r->part_total > 0 ? std::to_string(r->part_seq) + " of " +
+                                                        std::to_string(r->part_total)
+                                                  : "";
+            sec.rows.push_back({"", r->element_id, r->description, colors, r->qty, label});
+        }
+        sec.subtitle = std::to_string(by_person[person].size()) + " lots, " + format_g(pieces) +
+                       " pieces";
+        sections.push_back(std::move(sec));
+    }
+    return sections_pdf(sections, {"", "Element", "Description", "LEGO / BrickLink color", "Qty", "Label"},
+                        {22, 55, 160, 145, 45, 55}, true);
 }
 
 std::string weight_text(const ordering::PartSummary& part) {

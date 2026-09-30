@@ -47,6 +47,10 @@ std::string parts_csv(const std::vector<ordering::PartSummary>& parts);
 // Printable parts list, one row per part, in the order given.
 std::vector<uint8_t> parts_pdf(const std::vector<ordering::PartSummary>& parts);
 
+// Packing checklist: one page per person (last-name order) listing their
+// labels in the order given, with an empty tick box per line.
+std::vector<uint8_t> checklist_pdf(const std::vector<LabelRecord>& records);
+
 // "~4.6 g/pc" (estimated), "12 g/pc" (from the sheet), or "size unknown".
 std::string weight_text(const ordering::PartSummary& part);
 

@@ -24,6 +24,17 @@ and a per-sheet "last run" history are implemented.
   part photo, Element ID (bold), quantity, both LEGO and BrickLink color
   names, description and the person's name. Trans, white, and very pale
   parts are shown on a light gray tile so they don't vanish when printed.
+- **Label design** — per sheet, with a live preview (sample parts, the
+  real PDF renderer): switch any label part on or off — photo, element ID,
+  quantity, LEGO and BrickLink color, description, name, "3 of 10" count,
+  gray tile behind clear/white parts, color swatch, QR code linking to the
+  part on BrickLink — and pick the stock and part order. Designs are saved
+  per Google Sheet, so everyone with that sheet prints the same labels;
+  Labels, Checklist and Parts list downloads follow it. An **alignment
+  test page** prints the stock's outlines on plain paper to check the
+  printer first.
+- **Packing checklist** (PDF) — one page per person listing their parts
+  with a tick box per bag.
 - **Label stock** — pick from 51 Avery (US-Letter and A4) and Dymo
   LabelWriter stocks, searchable by any part number on the box (e.g.
   8162, L7163, 30857); default Avery 5162. The inventory is
@@ -48,7 +59,8 @@ estimate from the description's stud dimensions (`PLATE 4X8`,
 Set `BRICKLINK_CONSUMER_KEY`, `BRICKLINK_CONSUMER_SECRET`,
 `BRICKLINK_TOKEN` and `BRICKLINK_TOKEN_SECRET` (see `.env.example`) to
 look each part up on BrickLink: catalog weight for part order, and the
-BrickLink color for any the sheet is missing. Get them from BrickLink's
+BrickLink color for any the sheet is missing. When a sheet is added, its
+parts are looked up in the background so the first print doesn't wait. Get them from BrickLink's
 [API registration](https://www.bricklink.com/v2/api/register_consumer.page)
 (may require a — possibly closed — store); the access token must be
 created for the **server's** public IP. Lookups are cached in the
@@ -118,7 +130,8 @@ any one person — or script — can make it do:
 | Any request | 120 at once, then 10/second, per client IP (sign-in routes: 10, then one per 6 seconds) |
 | Request body | 64 KB (Crow patched at build time — `cmake/patch_crow.cmake`); bigger uploads are dropped |
 | Sheet size | 3,000 rows read; 20,000 labels / 2,000 parts per run; 32 MB Google response |
-| Saved sheets | 50 per user; 10 sessions per user |
+| Saved sheets | 50 per user (only sheets your Google account can open); 10 sessions per user |
+| Preview / test page / design saves | 20, then 1/second, per user |
 | BrickLink | 300 new lookups per run, `BRICKLINK_DAILY_CALLS` (default 4,000) per day server-wide |
 | Part photos | only digit element IDs, only from LEGO's CDN over HTTPS, 2 MB max |
 
