@@ -58,18 +58,6 @@ CREATE TABLE IF NOT EXISTS sessions (
 
 CREATE INDEX IF NOT EXISTS idx_sessions_expiry ON sessions(expires_at);
 
--- BrickLink catalog lookups by LEGO element ID (see src/bricklink.h), shared
--- across users and sheets — catalog data isn't user-specific. A row with
--- NULL weight is a miss (unknown element, or no catalog weight), retried
--- after a week.
-CREATE TABLE IF NOT EXISTS bricklink_parts (
-    element_id  TEXT PRIMARY KEY,
-    part_no     TEXT NOT NULL DEFAULT '',
-    color       TEXT NOT NULL DEFAULT '',
-    weight      REAL,
-    fetched_at  INTEGER NOT NULL  -- unix time
-);
-
 -- Label design per Google Sheet (label stock, part order, parts switched
 -- off), shared by everyone who has that sheet saved, so they all print the
 -- same labels. Keyed by the Google file id, not the per-user sheets row.

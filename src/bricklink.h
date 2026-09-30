@@ -1,55 +1,49 @@
-// Part weights (and BrickLink color names) from the BrickLink API — port
-// of lugbulk-label's bricklink.py.
+// Part weights and BrickLink color names from BrickLink's catalog download
+// — port of lugbulk-label's bricklink.py.
 //
-// For each LEGO element ID: GET /item_mapping/{element_id} gives the
-// BrickLink part number and color, then GET /items/PART/{no} the catalog
-// weight in grams. main.cpp caches results (misses too) in SQLite, so each
-// part costs two calls once (BrickLink allows 5,000 calls a day).
-//
-// Needs OAuth 1.0 credentials from
-// https://www.bricklink.com/v2/api/register_consumer.page — consumer key
-// and secret, plus an access token and secret tied to the server's IP.
+// BrickLink's API is for sellers only, but any free member can download the
+// catalog (https://www.bricklink.com/catalogDownload.asp) as Tab-Delimited
+// files. Two are read from a folder ($LUGBULK_DATA_DIR/bricklink/):
+//   - Catalog Items -> Parts, with "Include Weight": BrickLink part number
+//     -> grams (header "Number" ... "Weight (in Grams)"; "?" = unknown);
+//   - Part and Color Codes: LEGO element ID -> BrickLink part and color
+//     (header "Item No", "Color", "Code").
+// Files are recognised by their header row, not their names, and reloaded
+// when they change, so updating the data is just replacing the files.
 #pragma once
 
 #include <map>
+#include <memory>
+#include <mutex>
 #include <optional>
-#include <stdexcept>
 #include <string>
 
 namespace lugbulk::bricklink {
 
-struct Credentials {
-    std::string consumer_key, consumer_secret, token, token_secret;
-
-    bool complete() const {
-        return !consumer_key.empty() && !consumer_secret.empty() && !token.empty() &&
-               !token_secret.empty();
-    }
-};
-
 struct PartInfo {
-    std::string part_no;           // BrickLink item number, e.g. "3004"; empty if unknown
-    std::string color;             // BrickLink color name; empty if unknown
-    std::optional<double> weight;  // grams per piece
+    std::string part_no;           // BrickLink item number, e.g. "3004"
+    std::string color;             // BrickLink color name
+    std::optional<double> weight;  // grams per piece; nullopt if BrickLink doesn't know
 };
 
-// The API refused the request (bad credentials, wrong IP, quota...) —
-// every other request will fail the same way.
-struct ApiError : std::runtime_error {
-    using std::runtime_error::runtime_error;
+using Catalog = std::map<std::string, PartInfo>;  // LEGO element ID -> info
+
+// Reads the catalog files in `folder`. Empty if the folder or either file
+// is missing.
+Catalog load(const std::string& folder);
+
+// The catalog in `folder`, reloaded only when its files change (checked by
+// modification time and size on each call — a few stat()s). Thread-safe.
+class CatalogCache {
+public:
+    explicit CatalogCache(std::string folder) : folder_(std::move(folder)) {}
+    std::shared_ptr<const Catalog> get();
+
+private:
+    std::string folder_;
+    std::mutex mu_;
+    std::string signature_;
+    std::shared_ptr<const Catalog> catalog_ = std::make_shared<Catalog>();
 };
-
-// OAuth 1.0 HMAC-SHA1 Authorization header value (RFC 5849). `params` are
-// the request's query/form parameters, which are part of the signature;
-// nonce/timestamp are generated when empty.
-std::string oauth_header(const std::string& method, const std::string& url,
-                         const Credentials& creds,
-                         const std::map<std::string, std::string>& params = {},
-                         std::string nonce = "", std::string timestamp = "");
-
-// Looks one element up. A PartInfo with an empty part_no means BrickLink
-// doesn't know the element. Throws ApiError for auth/quota problems and
-// std::runtime_error for network failures.
-PartInfo fetch(const std::string& element_id, const Credentials& creds);
 
 }  // namespace lugbulk::bricklink

@@ -1,10 +1,9 @@
 // Abuse protection: rate limits, concurrency caps and sign-in allowlist.
 //
 // Generating a report is the expensive thing this server does (a Google
-// Sheets fetch, dozens of part-photo downloads and BrickLink lookups, PDF
+// Sheets fetch, dozens of part-photo downloads, PDF
 // rendering), so one person hammering the buttons — or a script — must
-// not be able to tie up every worker thread or burn the shared BrickLink
-// quota. See main.cpp for where each limit applies.
+// not be able to tie up every worker thread. See main.cpp for where each limit applies.
 #pragma once
 
 #include <chrono>
@@ -78,21 +77,6 @@ private:
     const int global_max_;
     std::mutex mu_;
     std::set<int64_t> running_;
-};
-
-// A daily allowance shared by the whole server (UTC days), e.g. BrickLink
-// API calls. Thread-safe.
-class DailyBudget {
-public:
-    explicit DailyBudget(int per_day);
-    // Takes up to `want` units; returns how many were granted.
-    int take(int want);
-
-private:
-    const int per_day_;
-    std::mutex mu_;
-    int64_t day_ = -1;
-    int used_ = 0;
 };
 
 // Who may sign in. Entries are full addresses ("ann@example.com") or

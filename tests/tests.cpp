@@ -250,18 +250,33 @@ void test_backdrop() {
     CHECK(!image_backdrop::backdrop(img, false, false).has_value());
 }
 
-void test_bricklink_oauth_signature() {
-    // Twitter's published OAuth 1.0a signing walkthrough.
-    bricklink::Credentials creds{"xvz1evFS4wEEPTGEFPHBog", "kAcSOqF21Fu85e7zjz7ZN2U4ZRhfV3WpwPAoE3Z7kBw",
-                                 "370773112-GmHxMAgYyLbNEtIKZeRNFsMKPR9EyMZeS9weJAEb",
-                                 "LswwdoUaIvS8ltyTt5jkRh4J50vUPVVHtR2YPi5kE"};
-    std::string header = bricklink::oauth_header(
-        "POST", "https://api.twitter.com/1.1/statuses/update.json", creds,
-        {{"include_entities", "true"},
-         {"status", "Hello Ladies + Gentlemen, a signed OAuth request!"}},
-        "kYjzVBB8Y0ZFabxSWbWovY3uYSQ2pTgmZeNu2VS4cg", "1318622958");
-    CHECK(header.find("oauth_signature=\"hCtSmYh%2BiHYCEqBWrE7C7hYmtUk%3D\"") != std::string::npos);
-    CHECK((!bricklink::Credentials{"a", "b", "c", ""}.complete()));
+void test_bricklink_catalog() {
+    char dir_template[] = "/tmp/lugbulk_bl_XXXXXX";
+    std::string dir = mkdtemp(dir_template);
+    CHECK(bricklink::load(dir).empty());  // no files
+    // BrickLink's downloads are tab-delimited with CRLF; any file names.
+    std::ofstream(dir + "/downloaded-1.txt")
+        << "Category ID\tCategory Name\tNumber\tName\tAlternate Item Number\tWeight (in Grams)\r\n"
+           "\r\n5\tBrick\t3004\tBrick 1 x 2\t3004f1\t0.83\r\n"
+           "28\tAnimal\tx223\tFrog\t\t?\r\n";
+    CHECK(bricklink::load(dir).empty());  // codes file still missing
+    std::ofstream(dir + "/whatever.txt")
+        << "Item No\tColor\tCode\r\n3004\tLight Bluish Gray\t4211388\r\nx223\tBlack\t6584302\r\n";
+    auto catalog = bricklink::load(dir);
+    CHECK_EQ(catalog.size(), size_t{2});
+    auto brick = catalog.find("4211388");
+    CHECK(brick != catalog.end() && brick->second.part_no == "3004" &&
+          brick->second.color == "Light Bluish Gray" && brick->second.weight &&
+          near(*brick->second.weight, 0.83));
+    auto frog = catalog.find("6584302");
+    CHECK(frog != catalog.end() && !frog->second.weight);  // "?" weight
+
+    bricklink::CatalogCache cache(dir);
+    CHECK_EQ(cache.get()->size(), size_t{2});
+    std::ofstream(dir + "/whatever.txt", std::ios::app) << "3004\tWhite\t300101\r\n";
+    CHECK_EQ(cache.get()->size(), size_t{3});  // picks up the changed file
+    for (const char* f : {"/downloaded-1.txt", "/whatever.txt"}) std::remove((dir + f).c_str());
+    rmdir(dir.c_str());
 }
 
 void test_placeholder_color_and_catalog_weight() {
@@ -352,11 +367,6 @@ void test_rate_limits() {
     }
     CHECK(gate.enter(3).ticket.has_value());  // tickets released on scope exit
 
-    limits::DailyBudget budget(10);
-    CHECK_EQ(budget.take(6), 6);
-    CHECK_EQ(budget.take(6), 4);
-    CHECK_EQ(budget.take(1), 0);
-
     limits::Allowlist open("");
     CHECK(open.allows("anyone@example.com"));
     limits::Allowlist list(" Ann@Example.com, @lug.org ");
@@ -443,7 +453,7 @@ int main() {
         {"ordering", test_ordering},
         {"reports_csv_injection", test_reports_csv_injection},
         {"backdrop", test_backdrop},
-        {"bricklink_oauth_signature", test_bricklink_oauth_signature},
+        {"bricklink_catalog", test_bricklink_catalog},
         {"placeholder_color_and_catalog_weight", test_placeholder_color_and_catalog_weight},
         {"label_specs", test_label_specs},
         {"rate_limits", test_rate_limits},

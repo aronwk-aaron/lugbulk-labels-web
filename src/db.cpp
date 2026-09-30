@@ -138,6 +138,8 @@ Db::Db(const std::string& path, const std::string& schema_sql_path) {
 // Brings databases created by older builds up to schema.sql, which only
 // ever CREATEs IF NOT EXISTS and so can't change an existing table.
 void Db::migrate() {
+    // The BrickLink API lookup cache, from before the catalog-file import.
+    sqlite3_exec(db_, "DROP TABLE IF EXISTS bricklink_parts;", nullptr, nullptr, nullptr);
     // sheets.verified_at (added with shared label designs).
     {
         bool has_verified = false;
@@ -425,45 +427,6 @@ std::vector<Run> Db::list_runs(int64_t sheet_row_id, int limit) {
                        s.column_text(3), s.column_text(4)});
     }
     return out;
-}
-
-std::map<std::string, BrickLinkPart> Db::get_bricklink_parts(
-    const std::vector<std::string>& element_ids) {
-    std::map<std::string, BrickLinkPart> out;
-    Stmt s(db_,
-           "SELECT element_id, part_no, color, weight, fetched_at FROM bricklink_parts "
-           "WHERE element_id = ?;");
-    for (const auto& id : element_ids) {
-        s.reset();
-        s.bind_text(1, id);
-        if (!s.step()) continue;
-        BrickLinkPart p;
-        p.element_id = s.column_text(0);
-        p.part_no = s.column_text(1);
-        p.color = s.column_text(2);
-        if (!s.column_is_null(3)) p.weight = s.column_double(3);
-        p.fetched_at = s.column_int64(4);
-        out.emplace(p.element_id, std::move(p));
-    }
-    return out;
-}
-
-void Db::put_bricklink_part(const BrickLinkPart& part) {
-    Stmt s(db_,
-           "INSERT INTO bricklink_parts (element_id, part_no, color, weight, fetched_at) "
-           "VALUES (?, ?, ?, ?, ?) "
-           "ON CONFLICT(element_id) DO UPDATE SET part_no = excluded.part_no, "
-           "color = excluded.color, weight = excluded.weight, fetched_at = excluded.fetched_at;");
-    s.bind_text(1, part.element_id);
-    s.bind_text(2, part.part_no);
-    s.bind_text(3, part.color);
-    if (part.weight) {
-        s.bind_double(4, *part.weight);
-    } else {
-        s.bind_null(4);
-    }
-    s.bind_int64(5, part.fetched_at);
-    s.step();
 }
 
 void Db::log_run(int64_t sheet_row_id, const std::string& report_type, int item_count,
