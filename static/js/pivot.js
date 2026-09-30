@@ -30,7 +30,7 @@ function cell(row, idx) {
   return trim(str(row[idx]));
 }
 
-// "232.45", "$232.45", "€1,234" — a person's running cost header cell.
+// "120.50", "$120.50", "€1,234" — a person's running cost header cell.
 const NUMBER = /^(\$|€|£)?[ \t\n\v\f\r]*-?[0-9,]*\.?[0-9]+$/;
 function isNumber(text) {
   return NUMBER.test(trim(text));

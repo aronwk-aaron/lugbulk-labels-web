@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <charconv>
 #include <cmath>
 #include <cstdio>
 #include <fstream>
@@ -173,9 +174,11 @@ std::string lookup_json(const Catalog& catalog, const std::vector<std::string>& 
         crow::json::escape(it->second.color, color);
         std::string weight = "null";
         if (it->second.weight && std::isfinite(*it->second.weight)) {
+            // Shortest text that reads back as the same double, so the
+            // browser gets exactly the weight the server itself would use.
             char buf[32];
-            std::snprintf(buf, sizeof(buf), "%.10g", *it->second.weight);
-            weight = buf;
+            auto res = std::to_chars(buf, buf + sizeof(buf), *it->second.weight);
+            weight.assign(buf, res.ptr);
         }
         if (out.size() > 1) out += ",";
         out += "\"" + key + "\":{\"part\":\"" + part + "\",\"color\":\"" + color +
