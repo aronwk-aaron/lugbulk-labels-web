@@ -181,7 +181,7 @@ image to GitHub Container Registry with the repo's built-in
 | Push a `vX.Y.Z-rc.N` tag | `X.Y.Z-rc.N` | Pre-release |
 
 `latest` only ever moves on a release. Every release attaches
-`docker-compose.yml` and `.env.example`. The running build's version is
+`docker-compose.yml` and `env.example` (save it as `.env`). The running build's version is
 shown in the dashboard header and at `/version` (`1.2.0`,
 `canary-<sha>`, or `dev` for local builds).
 

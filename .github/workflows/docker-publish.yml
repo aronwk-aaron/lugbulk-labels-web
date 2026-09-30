@@ -148,6 +148,8 @@ jobs:
 
       - name: Release notes header
         run: |
+          # GitHub renames dot-files on upload ("default.env.example").
+          cp .env.example env.example
           if [[ "$GITHUB_REF" == refs/tags/v* ]]; then tag="$VERSION"; else tag=canary; fi
           cat > header.md <<EOF
           ## Container image
@@ -156,7 +158,7 @@ jobs:
           docker pull $IMAGE:$tag
           \`\`\`
 
-          Deploy with the attached \`docker-compose.yml\` and \`.env.example\`
+          Deploy with the attached \`docker-compose.yml\` and \`env.example\` (save it as \`.env\`)
           (see the README's OAuth setup). The dashboard header and \`/version\`
           show \`$VERSION\`.
           EOF
@@ -168,7 +170,7 @@ jobs:
           [[ "$GITHUB_REF_NAME" == *-* ]] && prerelease="--prerelease"
           gh release create "$GITHUB_REF_NAME" --verify-tag --generate-notes $prerelease \
             --title "$GITHUB_REF_NAME" --notes-file header.md \
-            docker-compose.yml .env.example
+            docker-compose.yml env.example
 
       - name: Canary (head of master)
         if: github.ref == 'refs/heads/master'
@@ -187,4 +189,4 @@ jobs:
           gh release delete canary --yes --cleanup-tag 2>/dev/null || true
           gh release create canary --target "$GITHUB_SHA" --prerelease \
             --title "Canary ($VERSION)" --notes-file notes.md \
-            docker-compose.yml .env.example
+            docker-compose.yml env.example
