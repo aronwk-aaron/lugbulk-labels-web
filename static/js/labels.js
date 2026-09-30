@@ -342,7 +342,9 @@ async function labelImage(doc, record, show, images, cache, prepare) {
   return img;
 }
 
-// The labels PDF (Uint8Array). Records are drawn in the order given.
+// The labels PDF (Uint8Array). Records are drawn in the order given, one
+// per slot; a null in the list leaves its slot empty (packing.js uses that to
+// keep parts on one sheet).
 // opts: {show (optionsFromHidden), images, maxPages, prepareImage,
 // onProgress({phase: 'pages', page, pages})}.
 export async function buildLabelsPdf(records, spec, opts = {}) {
@@ -361,6 +363,7 @@ export async function buildLabelsPdf(records, spec, opts = {}) {
     const page = doc.addPage([pageW, pageH]);
     for (const slot of pageSlots(spec, Math.min(per, used.length - idx))) {
       const record = used[idx++];
+      if (!record) continue;
       const lay = layoutLabel(record, slot.w, slot.h, show, helveticaMeasure);
       const image = lay.image ? await labelImage(doc, record, show, opts.images, cache, opts.prepareImage) : null;
       drawLabel(page, slot.x, slot.y, lay, fonts, image);

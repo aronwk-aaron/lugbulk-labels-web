@@ -184,3 +184,23 @@ test('options: hidden parts', () => {
   assert.throws(() => labels.optionsFromHidden('nope'));
   assert.equal(labels.bricklinkUrl('6225242'), 'https://www.bricklink.com/v2/search.page?q=6225242');
 });
+
+test('blank slots (null) are left empty; the labels after them keep their own slots', async () => {
+  const spec = specById('avery5160'); // 30 per sheet, 3 columns
+  const a = { ...RECORDS[0], element_id: '1111111' };
+  const b = { ...RECORDS[1], element_id: '2222222' };
+  const slots = [a, null, null, b, ...Array(26).fill(null), a];
+  assert.equal(slots.length, 31);
+  const bytes = await labels.buildLabelsPdf(slots, spec, { show: labels.optionsFromHidden('photo') });
+  const doc = await PDFDocument.load(bytes);
+  assert.equal(doc.getPageCount(), 2);
+  const text = await pdfText(bytes);
+  assert.equal((text.match(/1111111/g) || []).length, 2);
+  assert.equal((text.match(/2222222/g) || []).length, 1);
+  // A sheet of only blanks is still a (blank) page, and a preview of one page stops there.
+  const one = await labels.buildLabelsPdf(slots, spec, { maxPages: 1 });
+  assert.equal((await PDFDocument.load(one)).getPageCount(), 1);
+  const empty = await labels.buildLabelsPdf(Array(30).fill(null), spec);
+  assert.equal((await PDFDocument.load(empty)).getPageCount(), 1);
+  assert.equal(await pdfText(empty), '');
+});
