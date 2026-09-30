@@ -387,6 +387,15 @@ int main() {
         return 1;
     }
 
+    try {
+        // Relative to the working directory, like sql/ and templates/.
+        layout::load_label_specs(std::getenv("LUGBULK_LABEL_SPECS") ? std::getenv("LUGBULK_LABEL_SPECS")
+                                                                     : "data/label_specs.json");
+    } catch (const std::exception& e) {
+        std::cerr << "startup failed: " << e.what() << std::endl;
+        return 1;
+    }
+
     // Clear out sessions that expired while the server was down.
     db->delete_expired_sessions();
 
@@ -415,14 +424,39 @@ int main() {
         auto tmpl = crow::mustache::load("dashboard.html");
         crow::mustache::context ctx;
         ctx["email"] = user->email;
-        std::vector<crow::json::wvalue> specs;
-        for (const auto& spec : layout::kLabelSpecs) {
+        // Label stock picker: one <optgroup> per brand + page size.
+        std::vector<crow::json::wvalue> groups;
+        std::vector<crow::json::wvalue> options;
+        std::string group_name;
+        auto flush = [&] {
+            if (options.empty()) return;
+            crow::json::wvalue g;
+            g["label"] = group_name;
+            g["specs"] = std::move(options);
+            groups.push_back(std::move(g));
+            options.clear();
+        };
+        for (const auto& spec : layout::label_specs()) {
+            std::string name = spec.brand + (spec.page == "roll" ? " LabelWriter rolls"
+                                                                 : " " + spec.page + " sheets");
+            if (name != group_name) {
+                flush();
+                group_name = name;
+            }
             crow::json::wvalue item;
             item["id"] = spec.id;
-            item["name"] = spec.name;
-            specs.push_back(std::move(item));
+            std::string label = spec.display_name();
+            if (!spec.equivalents.empty()) {
+                label += " (also";
+                for (const auto& e : spec.equivalents) label += " " + e;
+                label += ")";
+            }
+            item["name"] = label;
+            if (spec.id == layout::kDefaultLabelSpecId) item["selected"] = true;
+            options.push_back(std::move(item));
         }
-        ctx["specs"] = std::move(specs);
+        flush();
+        ctx["spec_groups"] = std::move(groups);
         crow::response res(200, tmpl.render(ctx));
         res.set_header("Content-Type", "text/html; charset=utf-8");
         return res;
@@ -713,7 +747,7 @@ int main() {
         [&](const crow::request& req, int64_t row_id) {
             const char* spec_id = req.url_params.get("spec");
             const layout::LabelSpec* spec =
-                spec_id ? layout::find_label_spec(spec_id) : &layout::kDefaultLabelSpec;
+                spec_id ? layout::find_label_spec(spec_id) : &layout::default_label_spec();
             auto order = part_order_param(req);
             if (!spec) return crow::response(400, "unknown label spec");
             if (!order) return crow::response(400, "order must be heaviest, lightest or sheet");

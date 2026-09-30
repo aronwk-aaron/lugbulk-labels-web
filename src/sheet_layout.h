@@ -6,6 +6,7 @@
 #include <cstddef>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace lugbulk::layout {
 
@@ -45,11 +46,16 @@ inline std::string image_url_for(const std::string& element_id) {
            element_id + ".jpg";
 }
 
-// A label format. Sheet stock is laid out as a grid on US Letter; a roll
-// label (Dymo) is one label per page, page size = label size.
+// A label stock. Sheet stock is laid out as a grid on its page; a roll
+// label (Dymo) is one label per page, page size = label size (stored
+// landscape). The inventory — Avery US-Letter and A4, Dymo LabelWriter —
+// lives in data/label_specs.json, generated from the gLabels template
+// database by lugbulk-label's tools/update_label_specs.py.
 struct LabelSpec {
-    const char* id;
-    const char* name;  // shown in the dashboard's picker
+    std::string id;  // e.g. "avery5162", "dymo30857"
+    std::string brand, part, description;
+    std::string page;  // "US-Letter" | "A4" | "roll"
+    std::vector<std::string> equivalents;  // other part numbers for the same stock
     double sheet_width_mm, sheet_height_mm;
     int columns, rows;
     double label_width_mm, label_height_mm;
@@ -57,31 +63,23 @@ struct LabelSpec {
     double row_gap_mm, column_gap_mm;
 
     int per_sheet() const { return columns * rows; }
+    // Human-readable, e.g. `Avery 5162 — Address labels, 1.33" x 4.00", 14/sheet`.
+    std::string display_name() const;
 };
 
-inline constexpr std::array<LabelSpec, 4> kLabelSpecs{{
-    // 1-1/3" x 4", 2 across x 7 down, 14/sheet
-    {"avery5162", "Avery 5162/8162 (1-1/3\" x 4\", 14/sheet)", 215.9, 279.4, 2, 7, 101.6,
-     33.867, 3.969, 21.167, 0, 4.763},
-    // Dymo LabelWriter 30857 name badge, 2-1/4" x 4", one per page
-    {"dymo30857", "Dymo 30857 (2-1/4\" x 4\", roll)", 101.6, 57.15, 1, 1, 101.6, 57.15, 0, 0,
-     0, 0},
-    // 2" x 4", 2 across x 5 down, 10/sheet
-    {"avery5163", "Avery 5163 (2\" x 4\", 10/sheet)", 215.9, 279.4, 2, 5, 101.6, 50.8, 3.9,
-     12.7, 0, 4.9},
-    // 1" x 2-5/8", 3 across x 10 down, 30/sheet — the 2026 size; cramped
-    {"avery5160", "Avery 5160 (1\" x 2-5/8\", 30/sheet)", 215.9, 279.4, 3, 10, 66.675, 25.4,
-     4.7625, 12.7, 0, 3.175},
-}};
+inline constexpr const char* kDefaultLabelSpecId = "avery5162";
 
-inline constexpr const LabelSpec& kDefaultLabelSpec = kLabelSpecs[0];
+// Loads the inventory; call once at startup. Throws std::runtime_error if
+// the file is missing or malformed, or lacks the default stock.
+void load_label_specs(const std::string& path);
 
-// Looks a spec up by id; nullptr if unknown.
-inline const LabelSpec* find_label_spec(std::string_view id) {
-    for (const auto& spec : kLabelSpecs) {
-        if (id == spec.id) return &spec;
-    }
-    return nullptr;
-}
+// The loaded inventory, in display order (brand, page size, part number).
+const std::vector<LabelSpec>& label_specs();
+
+// Looks a stock up by id, "Avery 8162", an equivalent part number, or a
+// bare part number ("5162"). nullptr if unknown.
+const LabelSpec* find_label_spec(std::string_view name);
+
+const LabelSpec& default_label_spec();
 
 }  // namespace lugbulk::layout

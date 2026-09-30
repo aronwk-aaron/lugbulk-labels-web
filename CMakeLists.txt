@@ -42,6 +42,7 @@ add_library(lugbulk_core STATIC
     src/image_backdrop.cpp
     src/oauth.cpp
     src/ordering.cpp
+    src/sheet_layout.cpp
     src/sheet_pivot.cpp
     src/reports.cpp
     src/labels_pdf.cpp
@@ -72,6 +73,8 @@ option(LUGBULK_BUILD_TESTS "Build unit tests" ON)
 if(LUGBULK_BUILD_TESTS)
     enable_testing()
     add_executable(lugbulk_tests tests/tests.cpp)
+    target_compile_definitions(lugbulk_tests PRIVATE
+        LUGBULK_LABEL_SPECS_PATH="${CMAKE_SOURCE_DIR}/data/label_specs.json")
     target_link_libraries(lugbulk_tests PRIVATE lugbulk_core)
     add_test(NAME lugbulk_tests COMMAND lugbulk_tests)
 endif()

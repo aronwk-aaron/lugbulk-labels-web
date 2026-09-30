@@ -296,7 +296,7 @@ void test_labels_pdf_every_spec() {
         std::ofstream(dir + "/" + r.element_id + ".jpg");
     }
     records = ordering::order_records(records, ordering::PartOrder::kHeaviest);
-    for (const auto& spec : layout::kLabelSpecs) {
+    for (const auto& spec : layout::label_specs()) {
         auto pdf = labels_pdf::build_labels_pdf(records, dir, spec);
         CHECK(pdf.size() > 500);
         CHECK(std::string(pdf.begin(), pdf.begin() + 5) == "%PDF-");
@@ -307,7 +307,30 @@ void test_labels_pdf_every_spec() {
 
 }  // namespace
 
+void test_label_specs() {
+    CHECK(layout::label_specs().size() > 40);
+    CHECK_EQ(layout::default_label_spec().id, std::string("avery5162"));
+    CHECK(layout::find_label_spec("8162") == &layout::default_label_spec());
+    CHECK(layout::find_label_spec("Avery 8162") == &layout::default_label_spec());
+    const auto* dymo = layout::find_label_spec("dymo30857");
+    CHECK(dymo && dymo->page == "roll" && dymo->label_width_mm > dymo->label_height_mm);
+    const auto* a4 = layout::find_label_spec("L7163");
+    CHECK(a4 && a4->page == "A4");
+    CHECK(layout::find_label_spec("bogus") == nullptr);
+    // Every stock's grid fits on its page.
+    for (const auto& s : layout::label_specs()) {
+        double right = s.left_margin_mm + s.columns * s.label_width_mm +
+                       (s.columns - 1) * s.column_gap_mm;
+        double bottom = s.top_margin_mm + s.rows * s.label_height_mm + (s.rows - 1) * s.row_gap_mm;
+        if (right > s.sheet_width_mm + 0.5 || bottom > s.sheet_height_mm + 0.5) {
+            std::cerr << s.id << " overflows its page\n";
+            ++g_failures;
+        }
+    }
+}
+
 int main() {
+    layout::load_label_specs(LUGBULK_LABEL_SPECS_PATH);
     const std::pair<const char*, std::function<void()>> tests[] = {
         {"colors", test_colors},
         {"estimate_weight", test_estimate_weight},
@@ -320,6 +343,7 @@ int main() {
         {"backdrop", test_backdrop},
         {"bricklink_oauth_signature", test_bricklink_oauth_signature},
         {"placeholder_color_and_catalog_weight", test_placeholder_color_and_catalog_weight},
+        {"label_specs", test_label_specs},
         {"labels_pdf_every_spec", test_labels_pdf_every_spec},
     };
     for (const auto& [name, fn] : tests) {

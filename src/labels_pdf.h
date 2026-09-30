@@ -28,6 +28,6 @@ namespace lugbulk::labels_pdf {
 // disk except the (non-sensitive, shared) image cache.
 std::vector<uint8_t> build_labels_pdf(const std::vector<LabelRecord>& records,
                                       const std::string& image_cache_dir,
-                                      const layout::LabelSpec& spec = layout::kDefaultLabelSpec);
+                                      const layout::LabelSpec& spec);
 
 }  // namespace lugbulk::labels_pdf

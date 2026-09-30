@@ -27,6 +27,7 @@ WORKDIR /app
 COPY --from=build /src/build/lugbulk_labels_web /app/lugbulk_labels_web
 COPY sql/schema.sql /app/sql/schema.sql
 COPY templates/ /app/templates/
+COPY data/ /app/data/
 COPY docker/entrypoint.sh /app/entrypoint.sh
 
 # Mounted volume: sqlite db + image_cache/ live here, survive redeploys.

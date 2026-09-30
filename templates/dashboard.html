@@ -28,6 +28,7 @@
   select { padding: 0.3rem; }
   .options { display: flex; flex-wrap: wrap; gap: 0.75rem; margin-bottom: 0.75rem; font-size: 0.9rem; }
   .options label { display: flex; gap: 0.3rem; align-items: center; }
+  #label-spec { max-width: 100%; }
   li .actions { flex-wrap: wrap; }
   li .issues { flex-basis: 100%; font-size: 0.85rem; margin: 0.25rem 0 0; padding-left: 1.2rem;
                list-style: disc; }
@@ -50,8 +51,11 @@
   <div class="options">
     <label>Label size
       <select id="label-spec">
-        {{#specs}}<option value="{{id}}">{{name}}</option>{{/specs}}
+        {{#spec_groups}}<optgroup label="{{label}}">{{#specs}}<option value="{{id}}"{{#selected}} selected{{/selected}}>{{name}}</option>{{/specs}}</optgroup>{{/spec_groups}}
       </select>
+    </label>
+    <label>Find stock
+      <input type="search" id="label-filter" placeholder="e.g. 8162, 30857, shipping" size="16">
     </label>
     <label>Part order
       <select id="part-order">
@@ -111,6 +115,27 @@ for (const id of ['label-spec', 'part-order', 'report-format']) {
   });
 }
 const opt = (id) => document.getElementById(id).value;
+
+// Narrow the (long) label stock list to options matching the search box:
+// part number, any equivalent, size, or description.
+document.getElementById('label-filter').addEventListener('input', (e) => {
+  const q = e.target.value.trim().toLowerCase();
+  const select = document.getElementById('label-spec');
+  let firstMatch = null;
+  for (const group of select.querySelectorAll('optgroup')) {
+    let any = false;
+    for (const o of group.querySelectorAll('option')) {
+      const hit = !q || o.textContent.toLowerCase().includes(q);
+      o.hidden = !hit;
+      if (hit) { any = true; firstMatch = firstMatch || o; }
+    }
+    group.hidden = !any;
+  }
+  if (q && firstMatch && select.selectedOptions[0].hidden) {
+    select.value = firstMatch.value;
+    select.dispatchEvent(new Event('change'));
+  }
+});
 
 // Triggers a browser download from a POST response — fetch() can't drive
 // navigation directly, so the response body is read as a blob and handed
