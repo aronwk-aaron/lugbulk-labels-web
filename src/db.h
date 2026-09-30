@@ -62,6 +62,7 @@ struct SheetOwnership {
     int64_t sheet_row_id;
     std::string sheet_id;      // Google Sheets file id
     std::string display_name;
+    bool verified = false;     // user's Google access to it has been confirmed
 };
 
 class Db {
@@ -123,6 +124,9 @@ public:
     // Most recent runs for a sheet, newest first. Callers must have done
     // the find_owned_sheet ownership check.
     std::vector<Run> list_runs(int64_t sheet_row_id, int limit);
+
+    // Records that the user's Google access to a saved sheet was confirmed.
+    void mark_sheet_verified(int64_t sheet_row_id);
 
     // Label design for a Google Sheet, shared across users; nullopt if none saved.
     std::optional<Design> get_design(const std::string& google_sheet_id);

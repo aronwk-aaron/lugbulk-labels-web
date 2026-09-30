@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>lugbulk-labels-web</title>
-<script>
+<script nonce="{{nonce}}">
   // Apply the saved theme before first paint (no flash of the wrong one).
   try {
     const t = localStorage.getItem('lugbulk.theme');
@@ -179,7 +179,7 @@
   <ul id="search-results"></ul>
 </section>
 
-<script>
+<script nonce="{{nonce}}">
 function el(tag, props, children) {
   const e = document.createElement(tag);
   if (props) for (const [k, v] of Object.entries(props)) {

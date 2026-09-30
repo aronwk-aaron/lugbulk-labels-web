@@ -24,6 +24,10 @@ CREATE TABLE IF NOT EXISTS sheets (
     sheet_id      TEXT NOT NULL,   -- the Google Sheets file ID (from the URL)
     display_name  TEXT NOT NULL,   -- user-facing label, e.g. "ArkLUG 2026"
     added_at      TEXT NOT NULL DEFAULT (datetime('now')),
+    -- When we last confirmed (via the Sheets API) that this user can open
+    -- the sheet; NULL for rows saved before that check existed. Editing the
+    -- sheet's shared label design requires it.
+    verified_at   TEXT,
     UNIQUE (user_id, sheet_id)
 );
 

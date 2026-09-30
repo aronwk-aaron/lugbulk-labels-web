@@ -140,11 +140,30 @@ rather than to the proxy's single IP (only with a proxy that sets
 `X-Forwarded-For` — otherwise clients could fake it). A proxy is also the
 place for TLS and connection limits; the app itself serves plain HTTP.
 
-Every response carries a strict Content-Security-Policy, `nosniff`,
-`X-Frame-Options: DENY` and a `text/plain` default; state-changing
-requests from another origin are refused; session cookies are HttpOnly,
-SameSite=Lax (and Secure over https) and stored hashed; refresh tokens are
-AES-256-GCM encrypted at rest.
+**Keeping each organizer's data private:**
+
+- Every sheet route checks the sheet belongs to the signed-in user
+  (someone else's sheet is indistinguishable from one that doesn't exist:
+  404). Sheets are only saved if your Google account can open them, and
+  all Google reads use your own Google authorization — the app can't read a
+  sheet on your behalf that you can't read yourself.
+- Label designs are shared per Google Sheet by design; only people whose
+  Google account can open the sheet can change one.
+- No response is cached anywhere (`Cache-Control: no-store, private`), so a
+  shared computer's Back button or a caching proxy can't show one
+  organizer's data to another. Logging out also clears the browser cache
+  for the site, and sign-ins last 14 days.
+- Nothing personal is logged: no emails, names, tokens or request URLs
+  (Crow's access log is off); errors log only internal user/sheet ids.
+
+**Hardening:** a strict Content-Security-Policy (the dashboard's scripts
+run only with a per-response nonce; no other script can), `nosniff`,
+`X-Frame-Options: DENY`, HSTS over https, and a `text/plain` default;
+state-changing requests from another origin are refused; session cookies
+are HttpOnly, SameSite=Lax (Secure over https) and stored hashed; refresh
+tokens are AES-256-GCM encrypted at rest. Third-party code is pinned by
+commit (GitHub Actions, Crow, the QR library) and kept current by
+Dependabot.
 
 ## Local development
 
