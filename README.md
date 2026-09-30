@@ -2,7 +2,7 @@
 
 > **AI disclaimer:** This project was scaffolded with assistance from Claude
 > (Anthropic). Review the code before relying on it, especially the OAuth
-> flow, token storage, and PDF generation logic.
+> flow, token storage, and the in-browser PDF generation logic.
 
 Hosted, multi-user counterpart to
 [lugbulk-label](https://github.com/aronwk-aaron/lugbulk-label) (the local
@@ -13,16 +13,16 @@ locally.
 
 **Status: working, pre-release.** Google OAuth login (encrypted refresh
 token storage, hashed session tokens), a Google Picker sheet chooser,
-generation of label PDFs, a parts list and lot counts from the live sheet,
-and a per-sheet "last run" history are implemented.
+generation (in the browser) of label PDFs, a parts list and lot counts from
+the live sheet, and a per-sheet "last download" history are implemented.
 
 ## Two ways in
 
 - **Upload a spreadsheet** — no account needed. Upload the order sheet as
   an Excel `.xlsx` (Google Sheets: File → Download → Microsoft Excel) or a
   `.csv` of its "Order Here" tab, pick a label design, and download labels
-  and reports. The file is read in memory for that one request and never
-  stored. Up to 10 MB; an `.xlsx` may not unpack past 64 MB.
+  and reports. The file is read in your browser and never sent anywhere.
+  Up to 10 MB; an `.xlsx` may not unpack past 64 MB.
 - **Sign in with Google** (optional, when the OAuth client is configured)
   — save your Google Sheets and read them live each time, with label
   designs saved per sheet and shared with everyone who has that sheet.
@@ -55,10 +55,10 @@ can still open sheets already in their list.
 - **Download** — tick the files you want: labels, packing checklist, parts
   list and lot counts (PDF and CSV) and the sheet check. One file downloads
   as it is; several come in one `.zip`. Everything — labels, reports and
-  the zip — is made in the browser: an uploaded file never leaves it, and
-  for a saved Google Sheet the server only passes on the sheet's cells
-  (`/sheets/:id/values`), BrickLink data (`/bricklink/lookup`) and part
-  photos (`/img/<id>.jpg`). Label PDFs are built in a Web Worker
+  the zip — is made in the browser (the server no longer makes any PDF or
+  zip): an uploaded file never leaves it, and for a saved Google Sheet the
+  server only passes on the sheet's cells (`/sheets/:id/values`), BrickLink
+  data (`/bricklink/lookup`) and part photos (`/img/<id>.jpg`). Label PDFs are built in a Web Worker
   (`static/js/labels_worker.js`) with progress ("Fetching photos 120/800",
   "Page 3 of 40"); a saved sheet's download is logged
   (`POST /sheets/:id/runs`, the kind and a count only) for its "Last
@@ -115,7 +115,7 @@ automatically on the next report. Without them, weights are estimated.
 
 - **[CrowCpp](https://github.com/CrowCpp/Crow)** — C++ web framework, fetched via CMake `FetchContent` (header-only, not vendored in-repo)
 - **SQLite** — users, saved sheets, and a run history log. No generated files are persisted; every download re-runs against the live sheet.
-- **[PoDoFo](http://podofo.sourceforge.net)** — PDF generation. Chosen over libharu because libharu isn't packaged for Debian bookworm (our Docker base); PoDoFo is (`libpodofo-dev`).
+- **[pdf-lib](https://pdf-lib.js.org)** and **[Nayuki's QR Code generator](https://www.nayuki.io/page/qr-code-generator-library)** — PDFs and QR codes, in the browser (vendored, pinned, in `static/js/vendor/`). The server itself makes no PDFs.
 - **libcurl + OpenSSL** — outbound HTTPS for the Google OAuth token exchange and Sheets API calls.
 - **Docker** — deploy target is a single container on the maintainer's server, with `/data` as a mounted volume (SQLite DB + image cache).
 
@@ -139,16 +139,16 @@ known ways of laying out people are recognized: a `qty` marker row under
 the names (the ArkLUG sheet) or (name, running cost) header pairs (2026's
 master sheet) — see `src/sheet_pivot.h`.
 
-**Flow (server routes, kept for CI and other clients; the dashboard now
-makes every file in the browser — see Download above):** login → **Pick a Google Sheet…** opens the Google Picker (the page
+**Flow:** login → **Pick a Google Sheet…** opens the Google Picker (the page
 gets a short-lived `drive.file` token, the API key and the app id from
-`GET /auth/picker-token`) → save the picked sheet (`POST /sheets`) → dashboard listing saved sheets → per sheet,
-Check sheet (`GET /sheets/:id/check`), Labels (`POST /sheets/:id/labels?spec=&order=`),
-Parts list (`POST /sheets/:id/parts?format=&order=`) or Lot counts
-(`POST /sheets/:id/lots?format=`) → runs synchronously against the live
-sheet → PDF/CSV returned as a download. Nothing is stored on disk
-after the response goes out; `runs` (see `sql/schema.sql`) is a history
-log only — timestamp, report type, item count, status — not a file store.
+`GET /auth/picker-token`) → save the picked sheet (`POST /sheets`) →
+dashboard listing saved sheets → per sheet, the browser reads the live
+sheet's cells (`GET /sheets/:id/values`), pivots it, asks for BrickLink
+data (`POST /bricklink/lookup`) and part photos (`GET /img/<id>.jpg`), and
+makes the labels, reports and zip itself. The label design is saved with
+the sheet (`GET`/`PUT /sheets/:id/design`). Nothing generated is stored;
+`runs` (see `sql/schema.sql`) is a history log only — timestamp, report
+type, item count, status (`POST /sheets/:id/runs`) — not a file store.
 
 **Access tokens are never persisted.** Only the (encrypted) OAuth
 *refresh* token is stored; a short-lived access token is minted from it
@@ -160,7 +160,10 @@ discarded.
 
 The sheet pivot, ordering, color table and label layout mirror the CLI's
 `pivot.py`, `ordering.py`, `colors.py` and `render_labels.py`; keep the
-two in step when changing either.
+two in step when changing either. In this repo the JavaScript in
+`static/js/` is the reference: the C++ pivot/ordering/colors/spreadsheet
+code that remains is checked against it by the parity tests (see Building
+without Docker).
 
 **Not carried over from the CLI:** the full `--manifest` summary report,
 `--per-person` PDFs, `--sort-by` toggle (last-name order only), and
@@ -168,21 +171,21 @@ per-event color/weight overrides (fix the sheet instead).
 
 ## Security and abuse limits
 
-Generating a report is expensive (a Google Sheets read, dozens of photo
-downloads and BrickLink lookups, PDF rendering), so the server limits what
-any one person — or script — can make it do:
+Reading a sheet costs a Google Sheets call, and a big sheet asks for
+hundreds of part photos (LEGO's CDN) and BrickLink lookups, so the server
+limits what any one person — or script — can make it do:
 
 | What | Limit |
 |---|---|
 | Who can sign in | `ALLOWED_EMAILS` (addresses and/or `@domain`s); verified Google email required. Removing someone locks them out immediately. **Set this** — unset lets any Google account in and logs a warning at startup. |
-| Uploads | Same report limits as sign-in, keyed by client IP; 10 MB per file |
-| Reports and Check sheet | 6 at once, then one per 2 minutes, per user; one running per user; `MAX_CONCURRENT_JOBS` (default 2) server-wide. Over the limit gets an immediate "try again" (HTTP 429), never a queue. |
+| Reading a saved sheet | 6 at once, then one per 2 minutes, per user; one running per user; `MAX_CONCURRENT_JOBS` (default 2) server-wide. Over the limit gets an immediate "try again" (HTTP 429), never a queue. |
+| Uploads | Never reach the server: the file is read in the browser |
 | Drive search | 10 at once, then one per 3 seconds, per user |
 | Any request | 120 at once, then 10/second, per client IP (sign-in routes: 10, then one per 6 seconds) |
-| Request body | 64 KB (Crow patched at build time — `cmake/patch_crow.cmake`); bigger uploads are dropped |
+| Request body | 64 KB (Crow patched at build time — `cmake/patch_crow.cmake`); bigger requests are dropped |
 | Sheet size | 3,000 rows read; 20,000 labels / 2,000 parts per run; 32 MB Google response |
 | Saved sheets | 50 per user (only sheets your Google account can open); 10 sessions per user |
-| Preview / test page / design saves | 20, then 1/second, per user |
+| BrickLink lookups / design saves | 20, then 1/second, per visitor / user |
 | Part photos | only digit element IDs, only from LEGO's CDN over HTTPS, 2 MB max |
 
 Behind a reverse proxy, set `TRUST_PROXY=1` so limits apply per visitor
@@ -268,17 +271,29 @@ cmake --build build -j"$(nproc)"
 ```
 
 Requires: a C++20 compiler, CMake ≥ 3.20, and dev packages for OpenSSL,
-SQLite3, libcurl, libjpeg, PoDoFo 0.9.x, and standalone Asio (`libssl-dev
-libsqlite3-dev libcurl4-openssl-dev libjpeg-dev libpodofo-dev libasio-dev`
-on Debian/Ubuntu).
+SQLite3, libcurl, zlib and standalone Asio (`libssl-dev libsqlite3-dev
+libcurl4-openssl-dev zlib1g-dev libasio-dev` on Debian/Ubuntu).
 
-Unit tests (sheet pivoting, colors, ordering, reports, image outlining,
-PDF rendering for every label size) build alongside the server and run in
-the Docker build:
+Unit tests (sheet pivoting, colors, ordering, the photo cache, design
+storage, rate limits...) build alongside the server and run in the Docker
+build:
 
 ```
 ctest --test-dir build --output-on-failure
 ```
+
+The browser code has its own tests (Node 22+, no install):
+
+```
+node --test tests/js/                       # unit tests + the checked-in fixtures
+./build/lugbulk_golden golden && GOLDEN_DIR=golden node --test tests/js/   # + parity with the C++
+```
+
+`tests/js/golden/` holds fixtures dumped once from the C++ before its PDF,
+CSV and label-layout code was retired (`labels.json`, `reports.json`); the
+JavaScript is their reference now. `tests/js/golden/regenerate-labels.mjs`
+rewrites the label layouts from it after an intended change to the layout
+or the font widths (`static/js/afm.js`).
 
 ## Container image and releases
 
@@ -335,23 +350,20 @@ or with the compose file: `LUGBULK_TAG=canary docker compose pull && docker comp
 | `src/sheet_pivot.{h,cpp}` | Sheet rows → one record per (person, part), plus data issues |
 | `src/colors.{h,cpp}` | LEGO ↔ BrickLink color name table |
 | `src/ordering.{h,cpp}` | Part weight estimates, label order, "N of M" numbering, per-part summaries |
-| `src/labels_pdf.{h,cpp}` | Label PDF rendering (server routes; `layout_label` is the layout the browser port matches) and the shared part-photo cache |
-| `static/js/labels.js`, `backdrop.js`, `labels_worker.js` | Label PDFs in the browser (pdf-lib, Nayuki's qrcodegen), the gray tile behind light parts, and the Web Worker that runs them; checked against the C++ by `tests/js/labels.test.mjs` |
-| `src/image_backdrop.{h,cpp}` | Gray-tile treatment for trans/white part photos |
+| `src/label_options.{h,cpp}` | Which label parts a saved design switches on or off (validates `PUT /sheets/:id/design`) |
+| `src/part_images.{h,cpp}` | The shared part-photo cache behind `/img/<id>.jpg` |
+| `static/js/labels.js`, `backdrop.js`, `labels_worker.js`, `afm.js` | Label PDFs in the browser (pdf-lib, Nayuki's qrcodegen), the gray tile behind light parts, the Web Worker that runs them, and the Helvetica widths (Adobe AFM, by WinAnsi code) labels and reports measure text with; checked by `tests/js/labels.test.mjs`, `afm.test.mjs` |
 | `src/bricklink.{h,cpp}` | Reads BrickLink's catalog download files: weights and colors |
-| `src/reports.{h,cpp}` | Lot counts and parts list, CSV + PDF (server routes; the dashboard now uses `static/js/reports.js`) |
-| `src/zip_writer.{h,cpp}` | Builds the server's "Download all" `.zip` in memory |
 | `src/json_check.{h,cpp}` | Strict JSON check for the report options saved with a sheet's design |
-| `src/spreadsheet.{h,cpp}` | Reads uploaded `.xlsx` (bounded unzip + SpreadsheetML) and `.csv` |
-| `src/pdf_text.{h,cpp}` | UTF-8 → WinAnsi for PDF text |
+| `src/spreadsheet.{h,cpp}` | Reads `.xlsx` (bounded unzip + SpreadsheetML) and `.csv` — no longer used by a route; kept as the reference `static/js/spreadsheet.js` is tested against |
 | `src/records.{h,cpp}` | Row cap, per-run size limits, BrickLink data on records, the "Check sheet" JSON |
 | `static/js/` | Browser ports of the pure data logic (plain ES modules, served at `/static/js/<name>.js`): `pivot.js`, `ordering.js`, `colors.js`, `layout.js`, `records.js`, `spreadsheet.js`, `load.js`, and the reports (`reports.js`, `report_options.js`, `printf.js`) and zip writer (`zip.js`) |
 | `static/js/vendor/` | Third-party browser modules, pinned and unmodified: `pdf-lib.js` (see its README) |
 | `tests/tests.cpp` | Unit tests (`ctest`) |
 | `tests/golden.cpp` | `lugbulk_golden <dir>`: writes what the C++ makes of each fixture, for the JS parity test |
-| `tests/js/` | `node --test` tests for `static/js/`; `GOLDEN_DIR=<dir>` checks it matches the C++ (CI does this) |
+| `tests/js/` | `node --test` tests for `static/js/`; `GOLDEN_DIR=<dir>` checks it matches the C++ (CI does this); `tests/js/golden/` holds the checked-in fixtures |
 | `tests/fixtures/` | Invented order sheets (`.xlsx`, `.csv`) used by the tests |
-| `CMakeLists.txt` | Build config; fetches Crow, locates PoDoFo/SQLite3/CURL/OpenSSL/Asio |
+| `CMakeLists.txt` | Build config; fetches Crow, locates SQLite3/CURL/OpenSSL/zlib/Asio |
 | `sql/schema.sql` | SQLite schema: users, sheets, runs, sessions |
 | `templates/dashboard.html` | Mustache template for the logged-in dashboard page (Crow's bundled `crow::mustache`) |
 | `Dockerfile` | Multi-stage build (Debian bookworm base); tests run during the build |
@@ -376,5 +388,6 @@ offer its users that version's source code — the dashboard and the terms page
 link to it.
 
 Bundled or fetched components keep their own licenses: Crow (BSD-3-Clause),
-PoDoFo (LGPL-2.0), Nayuki's QR Code generator (MIT), and the gLabels label
-template database behind `data/label_specs.json` (MIT).
+pdf-lib (MIT), Nayuki's QR Code generator (MIT), and the gLabels label
+template database behind `data/label_specs.json` (MIT). The Helvetica widths
+in `static/js/afm.js` are from Adobe's Core 14 AFM files.

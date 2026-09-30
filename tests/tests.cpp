@@ -22,19 +22,15 @@
 
 #include "colors.h"
 #include "bricklink.h"
-#include "image_backdrop.h"
 #include "json_check.h"
-#include "labels_pdf.h"
+#include "label_options.h"
+#include "part_images.h"
 #include "oauth.h"
-#include "pdf_text.h"
 #include "rate_limits.h"
 #include "db.h"
-#include "samples.h"
 #include "spreadsheet.h"
-#include "zip_writer.h"
 #include "ordering.h"
 #include "records.h"
-#include "reports.h"
 #include "sheet_layout.h"
 #include "sheet_pivot.h"
 
@@ -223,44 +219,6 @@ void test_ordering() {
     CHECK(!ordering::parse_part_order("bogus").has_value());
 }
 
-void test_reports_csv_injection() {
-    std::vector<ordering::PartSummary> parts(1);
-    parts[0].element_id = "1111";
-    parts[0].description = "=HYPERLINK(\"http://x\")";
-    parts[0].lots = 1;
-    parts[0].pieces = 5;
-    std::string csv = reports::parts_csv(parts);
-    CHECK(csv.find("\"'=HYPERLINK(\"\"http://x\"\")\"") != std::string::npos);
-    CHECK_EQ(reports::weight_text(parts[0]), std::string("size unknown"));
-}
-
-void test_backdrop() {
-    // A faint gray square on white, as LEGO shoots a white/trans part.
-    image_backdrop::RgbImage img{40, 40, std::vector<uint8_t>(40 * 40 * 3, 255)};
-    for (int y = 12; y < 28; ++y)
-        for (int x = 12; x < 28; ++x)
-            for (int c = 0; c < 3; ++c) img.pixels[(y * 40 + x) * 3 + c] = 235;
-    auto px = [](const image_backdrop::RgbImage& im, int x, int y) {
-        return int{im.pixels[(static_cast<size_t>(y) * im.width + x) * 3]};
-    };
-
-    auto white = image_backdrop::backdrop(img, /*trans=*/false, /*light_color=*/true);
-    CHECK(white.has_value());
-    if (white) {
-        CHECK_EQ(white->width, 80);
-        CHECK(px(*white, 20, 40) < 230);  // background became the gray tile
-        CHECK(px(*white, 40, 40) >= 230);  // the part stayed its own (light) color
-        CHECK_EQ(px(*white, 0, 0), 255);   // rounded tile corner stays white
-    }
-    auto trans = image_backdrop::backdrop(img, true, false);
-    CHECK(trans.has_value());
-    if (trans) CHECK(px(*trans, 40, 40) < px(*trans, 20, 40));  // glass darkens the tile
-
-    // A dark (clearly visible) part in an ordinary color is left alone.
-    for (auto& p : img.pixels) if (p == 235) p = 60;
-    CHECK(!image_backdrop::backdrop(img, false, false).has_value());
-}
-
 void test_bricklink_catalog() {
     char dir_template[] = "/tmp/lugbulk_bl_XXXXXX";
     std::string dir = mkdtemp(dir_template);
@@ -324,10 +282,10 @@ void test_bricklink_lookup() {
 
 // GET /img/<name>: which names map to a cache file, and the cache probe.
 void test_image_names_and_cache() {
-    CHECK(labels_pdf::element_id_from_image_name("6225242.jpg") == std::optional<std::string>("6225242"));
+    CHECK(part_images::element_id_from_image_name("6225242.jpg") == std::optional<std::string>("6225242"));
     for (const char* bad : {"abc.jpg", "6225242.png", "6225242", ".jpg", "123.jpg", "../6225242.jpg",
                             "6225242.jpg.jpg", "6225242.JPG", "622%2F242.jpg", "https:x.jpg"}) {
-        if (labels_pdf::element_id_from_image_name(bad)) {
+        if (part_images::element_id_from_image_name(bad)) {
             std::cerr << "image name accepted: " << bad << "\n";
             ++g_failures;
         }
@@ -336,16 +294,16 @@ void test_image_names_and_cache() {
     char dir_template[] = "/tmp/lugbulk_img_XXXXXX";
     std::string dir = mkdtemp(dir_template);
     std::string path;
-    CHECK(labels_pdf::probe_image_cache("6225242", dir, &path) == labels_pdf::CachedImage::kUnknown);
+    CHECK(part_images::probe_image_cache("6225242", dir, &path) == part_images::CachedImage::kUnknown);
     CHECK_EQ(path, dir + "/6225242.jpg");
     std::ofstream(dir + "/6225242.jpg", std::ios::binary) << "\xFF\xD8\xFF\xE0jpeg";
-    CHECK(labels_pdf::probe_image_cache("6225242", dir, &path) == labels_pdf::CachedImage::kHit);
+    CHECK(part_images::probe_image_cache("6225242", dir, &path) == part_images::CachedImage::kHit);
     std::ofstream(dir + "/300101.jpg", std::ios::binary);  // a fresh cached miss
-    CHECK(labels_pdf::probe_image_cache("300101", dir) == labels_pdf::CachedImage::kMiss);
-    CHECK(labels_pdf::cached_image_path("300101", "https://invalid.invalid/x.jpg", dir).empty());
-    CHECK(labels_pdf::cached_image_path("6225242", "https://invalid.invalid/x.jpg", dir) ==
+    CHECK(part_images::probe_image_cache("300101", dir) == part_images::CachedImage::kMiss);
+    CHECK(part_images::cached_image_path("300101", "https://invalid.invalid/x.jpg", dir).empty());
+    CHECK(part_images::cached_image_path("6225242", "https://invalid.invalid/x.jpg", dir) ==
           dir + "/6225242.jpg");  // a hit never touches the network
-    CHECK(labels_pdf::probe_image_cache("../x", dir, &path) == labels_pdf::CachedImage::kMiss);
+    CHECK(part_images::probe_image_cache("../x", dir, &path) == part_images::CachedImage::kMiss);
     CHECK(path.empty());
     for (const char* f : {"/6225242.jpg", "/300101.jpg"}) std::remove((dir + f).c_str());
     rmdir(dir.c_str());
@@ -387,111 +345,6 @@ std::string joined(const std::vector<std::string>& lines) {
     std::string out;
     for (const auto& l : lines) out += l;
     return out;
-}
-
-// Nothing is cut off: long cell and label text wraps (breaking an overlong
-// word by characters only as a last resort), and report rows of different
-// heights paginate without running off the page.
-void test_no_truncation() {
-    // A monospace stand-in for font metrics: every character 1 unit wide
-    // at size 1.
-    auto chars = [](const std::string& t) { return static_cast<double>(t.size()); };
-    const std::string desc =
-        "BRICK 1X2 W/ BOW 1/2 AND CROSS AXLE HOLE, TRANSPARENT FLUORESCENT REDDISH ORANGE, "
-        "WITH PRINTED STRIPES ON BOTH SIDES 012";
-    CHECK_EQ(desc.size(), size_t{120});
-    auto lines = pdf_text::wrap_lines(desc, 30, chars);
-    CHECK(lines.size() >= 4);
-    for (const auto& l : lines) CHECK(l.size() <= 30);
-    CHECK_EQ(no_spaces(joined(lines)), no_spaces(desc));
-    for (const auto& l : lines) CHECK(l.empty() || (l.front() != ' ' && l.back() != ' '));
-
-    // A single word longer than a line: split by characters, none lost.
-    const std::string word(70, 'W');
-    lines = pdf_text::wrap_lines("Ann " + word + " end", 20, chars);
-    for (const auto& l : lines) CHECK(l.size() <= 20);
-    CHECK_EQ(no_spaces(joined(lines)), "Ann" + word + "end");
-    CHECK_EQ(pdf_text::wrap_lines("", 10, chars).size(), size_t{1});
-    CHECK_EQ(pdf_text::wrap_lines("Short", 10, chars).size(), size_t{1});
-
-    // Label fields: short text is drawn exactly as before (one line, same
-    // size); text that fits after shrinking shrinks as before; longer text
-    // wraps and shrinks to fit the field, never cut.
-    auto width = [](const std::string& t, double size) { return 0.5 * size * t.size(); };
-    auto fit = labels_pdf::fit_text("BRICK 1X1", 10, 7, 100, 12, width);
-    CHECK(fit.lines.size() == 1 && fit.lines[0] == "BRICK 1X1" && near(fit.size, 10));
-    fit = labels_pdf::fit_text(std::string(24, 'x'), 10, 7, 100, 12, width);
-    CHECK(fit.lines.size() == 1 && near(fit.size, 8));  // 24 * 0.5 * 8 = 96
-    for (const std::string& text :
-         {std::string("LEGO: Transparent Fluorescent Reddish Orange / Trans-Neon Orange"),
-          std::string("Medium Stone Grey / Light Bluish Gray"), desc,
-          std::string("BL: ") + std::string(90, 'Z')}) {
-        for (double height : {12.0, 30.0}) {
-            fit = labels_pdf::fit_text(text, 10, 7, 60, height, width);
-            CHECK_EQ(no_spaces(joined(fit.lines)), no_spaces(text));
-            for (const auto& l : fit.lines) CHECK(width(l, fit.size) <= 60 + 1e-9);
-            double block = fit.size * 0.94 + (fit.lines.size() - 1) * fit.leading;
-            CHECK(block <= height + 1e-9);
-            CHECK(fit.size > 0);
-        }
-    }
-
-    // Report rows: 16 pt per row, 11 more per extra line; pages never
-    // overfill and rows stay in order.
-    CHECK(near(reports::report_row_height(1), 16) && near(reports::report_row_height(3), 38));
-    std::vector<double> heights = {16, 16, 38, 16, 60, 16, 16, 27, 16};
-    auto pages = reports::paginate_rows(heights, 100);
-    CHECK_EQ(pages.size(), heights.size());
-    std::vector<double> used(static_cast<size_t>(pages.back() + 1), 0);
-    for (size_t i = 0; i < pages.size(); ++i) {
-        if (i) CHECK(pages[i] == pages[i - 1] || pages[i] == pages[i - 1] + 1);
-        used[static_cast<size_t>(pages[i])] += heights[i];
-    }
-    for (double u : used) CHECK(u <= 100);
-    CHECK_EQ(pages[4], 1);  // 16+16+38+16 = 86: the 60 pt row starts page 2
-
-    // The PDFs build with text far too long for any column or label.
-    std::vector<LabelRecord> records = {
-        rec("Zed Quillfeather-Montgomery-Ashworth", "6284070", desc, "250"),
-        rec("Ann Example", "300126", "PLATE 1X1", "10")};
-    records[0].lego_color = "Transparent Fluorescent Reddish Orange";
-    records[0].bl_color = "Trans-Neon Orange";
-    records[1].lego_color = "Medium Stone Grey";
-    records[1].bl_color = "Light Bluish Gray";
-    CHECK(reports::checklist_pdf(records).size() > 1000);
-    CHECK(reports::parts_pdf(ordering::summarize_parts(records, ordering::PartOrder::kSheet)).size() >
-          1000);
-    char dir_template[] = "/tmp/lugbulk_wrap_XXXXXX";
-    std::string dir = mkdtemp(dir_template);
-    for (const auto& r : records) std::ofstream(dir + "/" + r.element_id + ".jpg");
-    for (const char* stock : {"avery5160", "avery5162", "dymo30857"}) {
-        auto pdf = labels_pdf::build_labels_pdf(records, dir, *layout::find_label_spec(stock),
-                                                *labels_pdf::LabelOptions::from_hidden(""));
-        CHECK(pdf.size() > 500);
-    }
-    for (const auto& r : records) std::remove((dir + "/" + r.element_id + ".jpg").c_str());
-    rmdir(dir.c_str());
-}
-
-void test_labels_pdf_every_spec() {
-    // Pre-seed the image cache with "cached miss" markers so rendering
-    // never touches the network.
-    char dir_template[] = "/tmp/lugbulk_tests_XXXXXX";
-    std::string dir = mkdtemp(dir_template);
-    std::vector<LabelRecord> records = {rec("Ann Lee", "4211388", "BRICK 1X2", "25"),
-                                        rec("Bob Roe", "6508677", "BRICK 2X4, TRANSPARENT", "100")};
-    for (auto& r : records) {
-        r.image_url = layout::image_url_for(r.element_id);
-        std::ofstream(dir + "/" + r.element_id + ".jpg");
-    }
-    records = ordering::order_records(records, ordering::PartOrder::kHeaviest);
-    for (const auto& spec : layout::label_specs()) {
-        auto pdf = labels_pdf::build_labels_pdf(records, dir, spec);
-        CHECK(pdf.size() > 500);
-        CHECK(std::string(pdf.begin(), pdf.begin() + 5) == "%PDF-");
-    }
-    for (auto& r : records) std::remove((dir + "/" + r.element_id + ".jpg").c_str());
-    rmdir(dir.c_str());
 }
 
 }  // namespace
@@ -570,8 +423,8 @@ void test_rate_limits() {
 }
 
 void test_label_options_and_extras() {
-    using labels_pdf::LabelOptions;
-    using labels_pdf::LabelPart;
+    using labels::LabelOptions;
+    using labels::LabelPart;
     LabelOptions defaults;
     CHECK(defaults.show(LabelPart::kPhoto) && !defaults.show(LabelPart::kQr));
     CHECK_EQ(defaults.hidden_csv(), std::string("qr"));
@@ -588,32 +441,6 @@ void test_label_options_and_extras() {
     auto rgb = colors::swatch_rgb("", "Light Bluish Gray");
     CHECK(rgb && std::fabs((*rgb)[0] - 0xA0 / 255.0) < 1e-9);
     CHECK(!colors::swatch_rgb("MYSTERY", ""));
-    CHECK_EQ(labels_pdf::bricklink_url("6225242"),
-             std::string("https://www.bricklink.com/v2/search.page?q=6225242"));
-
-    auto records = samples::sample_records();
-    CHECK(records.size() == 9 && records.front().part_total > 0);
-
-    // Every combination renders, from no parts to everything (incl. QR),
-    // with photos as cached misses so nothing touches the network.
-    char dir_template[] = "/tmp/lugbulk_opts_XXXXXX";
-    std::string dir = mkdtemp(dir_template);
-    for (const auto& r : records) std::ofstream(dir + "/" + r.element_id + ".jpg");
-    const char* designs[] = {"", "qr", "photo,element_id,qty,lego_color,bl_color,description,name,count",
-                             "photo,swatch", "name,count"};
-    for (const char* hide : designs) {
-        for (const char* stock : {"avery5160", "avery5162", "dymo30857"}) {
-            auto pdf = labels_pdf::build_labels_pdf(records, dir, *layout::find_label_spec(stock),
-                                                    *LabelOptions::from_hidden(hide), 1);
-            CHECK(pdf.size() > 500);
-        }
-    }
-    auto page = labels_pdf::build_test_page(*layout::find_label_spec("avery5160"));
-    CHECK(std::string(page.begin(), page.begin() + 5) == "%PDF-");
-    auto checklist = reports::checklist_pdf(records);
-    CHECK(checklist.size() > 1000);
-    for (const auto& r : records) std::remove((dir + "/" + r.element_id + ".jpg").c_str());
-    rmdir(dir.c_str());
 }
 
 void test_design_storage() {
@@ -793,27 +620,6 @@ void test_spreadsheet_uploads() {
     CHECK(garbage);
 }
 
-void test_zip_writer() {
-    std::string zip = zip_writer::zip({{"a labels.pdf", "%PDF-1.4 hello"}, {"b.csv", "x,y\r\n"}});
-    CHECK(zip.rfind("PK\x03\x04", 0) == 0);
-    // End of central directory: 2 entries.
-    size_t eocd = zip.rfind("PK\x05\x06");
-    CHECK(eocd != std::string::npos && eocd + 22 == zip.size());
-    CHECK(static_cast<unsigned char>(zip[eocd + 10]) == 2);
-    // The stored bytes and names are there, and a real unzip agrees.
-    CHECK(zip.find("%PDF-1.4 hello") != std::string::npos && zip.find("b.csv") != std::string::npos);
-    char path[] = "/tmp/lugbulk_zip_XXXXXX";
-    int fd = mkstemp(path);
-    CHECK(fd >= 0);
-    if (fd >= 0) {
-        CHECK(write(fd, zip.data(), zip.size()) == static_cast<ssize_t>(zip.size()));
-        close(fd);
-        std::string cmd = std::string("unzip -tq ") + path + " >/dev/null 2>&1";
-        if (std::system("command -v unzip >/dev/null 2>&1") == 0) CHECK(std::system(cmd.c_str()) == 0);
-        std::remove(path);
-    }
-}
-
 void test_oauth_scopes() {
     const std::string granted = "openid https://www.googleapis.com/auth/drive.file "
                                 "https://www.googleapis.com/auth/userinfo.email";
@@ -837,15 +643,12 @@ int main() {
         {"pivot_rejects_bad_element_ids", test_pivot_rejects_bad_element_ids},
         {"pivot_duplicates_unmapped_and_weight", test_pivot_duplicates_unmapped_and_weight},
         {"ordering", test_ordering},
-        {"reports_csv_injection", test_reports_csv_injection},
-        {"backdrop", test_backdrop},
         {"bricklink_catalog", test_bricklink_catalog},
         {"bricklink_lookup", test_bricklink_lookup},
         {"image_names_and_cache", test_image_names_and_cache},
         {"placeholder_color_and_catalog_weight", test_placeholder_color_and_catalog_weight},
         {"label_specs", test_label_specs},
         {"spreadsheet_uploads", test_spreadsheet_uploads},
-        {"zip_writer", test_zip_writer},
         {"oauth_scopes", test_oauth_scopes},
         {"rate_limits", test_rate_limits},
         {"label_options_and_extras", test_label_options_and_extras},
@@ -853,8 +656,6 @@ int main() {
         {"design_migration", test_design_migration},
         {"json_check", test_json_check},
         {"check_text", test_check_text},
-        {"labels_pdf_every_spec", test_labels_pdf_every_spec},
-        {"no_truncation", test_no_truncation},
     };
     for (const auto& [name, fn] : tests) {
         int before = g_failures;

@@ -12,28 +12,17 @@
 //   GET    /sheets              list sheets the user has saved
 //   POST   /sheets              save a sheet the user picked (id + display name)
 //   DELETE /sheets/:row_id      remove a saved sheet
-//   GET    /sheets/:id/check    pivot the sheet and report data issues (JSON)
-//   POST   /sheets/:id/labels   generate the label PDF (?spec=avery5162&order=heaviest)
-//   POST   /sheets/:id/lots     lot counts per person, ?format=csv (default) or pdf
-//   POST   /sheets/:id/parts    parts list (pieces + people per part), ?format=csv|pdf&order=
-//   GET    /sheets/:id/history  recent generate runs for a sheet (JSON)
-//   POST   /sheets/:id/checklist  packing checklist PDF
-//   POST   /sheets/:id/all      every report in one .zip ("Download all")
+//   GET    /sheets/:id/history  recent download log entries for a sheet (JSON)
 //   GET    /sheets/:id/design   the sheet's saved label design and report options (JSON)
 //   PUT    /sheets/:id/design   save it: {"spec","order","hide","report_options"?:{...}}
-//   GET    /preview             one page of sample labels (?spec=&order=&hide=)
-//   POST   /sheets/:id/preview  the first page of the sheet's own labels (?spec=&order=&hide=)
-//   GET    /test-page           printer alignment page for a stock (?spec=)
 //   POST   /sheets/:id/runs     log a download made in the browser: {"report_type","item_count"}
 //
-// The dashboard no longer calls /upload/*, /sheets/:id/{preview,labels,all},
-// the report routes or /test-page: it builds every file in the browser.
-// Those routes stay for CI's end-to-end checks and other clients.
-//
-// For the browser-side renderer (report generation is moving client-side):
+// The server makes no PDFs, zips or previews: the dashboard builds every
+// file in the browser (static/js/), and reads an uploaded file there too.
+// What it needs from the server:
+//   GET    /sheets/:id/values   the "Order Here" tab's raw cell rows (JSON, no pivot)
 //   GET    /img/:element_id.jpg a LEGO element photo, via the shared image cache
 //   POST   /bricklink/lookup    part/color/weight for element ids: {"ids":[...]}
-//   GET    /sheets/:id/values   the "Order Here" tab's raw cell rows (JSON, no pivot)
 //   GET    /label-specs.json    the label stock inventory
 //   GET    /static/js/:name.js  browser-side modules (static/js/)
 //   GET    /static/js/vendor/:name.js  third-party modules they use (static/js/vendor/)
@@ -67,22 +56,17 @@
 #include <vector>
 
 #include "bricklink.h"
-#include "colors.h"
 #include "config.h"
 #include "crypto.h"
 #include "db.h"
-#include "labels_pdf.h"
 #include "rate_limits.h"
-#include "samples.h"
-#include "spreadsheet.h"
-#include "zip_writer.h"
 #include "oauth.h"
 #include "ordering.h"
 #include "json_check.h"
+#include "label_options.h"
+#include "part_images.h"
 #include "records.h"
-#include "reports.h"
 #include "sheet_layout.h"
-#include "sheet_pivot.h"
 
 namespace {
 
@@ -132,9 +116,11 @@ struct Guards {
     // Google Picker tokens and adding sheets, per user: 10, then one per 3
     // seconds.
     limits::RateLimiter search_per_user{10, 1.0 / 3};
-    // Reports (and Check sheet), per user: 6, then one per 2 minutes.
+    // Reading a sheet from Google (GET /sheets/:id/values), per user: 6, then
+    // one per 2 minutes.
     limits::RateLimiter jobs_per_user{6, 1.0 / 120};
-    // Live design preview and alignment test page, per user: 20, then 1/second.
+    // BrickLink lookups and saving a sheet's design, per visitor/user: 20, then
+    // 1/second.
     limits::RateLimiter preview_per_user{20, 1};
     // Downloads made in the browser, logged (POST /sheets/:id/runs), per
     // user: 20, then one every 3 seconds.
@@ -162,8 +148,6 @@ struct Guards {
           trust_proxy(cfg.trust_proxy) {}
 };
 Guards* g_guards = nullptr;  // set in main() before the server starts
-class PivotCache;
-PivotCache* g_pivots = nullptr;  // likewise
 
 // The client's IP: the socket peer, or with TRUST_PROXY the first address
 // in X-Forwarded-For (the proxy is then the socket peer).
@@ -191,7 +175,7 @@ std::string visitor_key(const crow::request& req, const std::optional<User>& use
     return user ? "user:" + std::to_string(user->id) : "ip:" + client_ip(req);
 }
 
-// Admission for an expensive request (a report or Check sheet): the
+// Admission for an expensive request (reading a sheet from Google): the
 // user's rate limit, then one job per user and MAX_CONCURRENT_JOBS
 // server-wide. Refusals are immediate — nothing queues on a worker thread.
 struct JobAdmission {
@@ -205,24 +189,14 @@ JobAdmission start_job(int64_t user_id) {
     return start_job("user:" + std::to_string(user_id), user_id);
 }
 
-// Same, for an anonymous upload: limits keyed by client IP.
-// A negative job-gate id per IP, so it can't collide with a user id.
-int64_t anonymous_gate_id(const std::string& ip) {
-    return -1 - static_cast<int64_t>(std::hash<std::string>{}(ip) & 0x3fffffffffffffffULL);
-}
-
-JobAdmission start_anonymous_job(const std::string& ip) {
-    return start_job("ip:" + ip, anonymous_gate_id(ip));
-}
-
-// The concurrency half of start_job alone: the live preview has its own
-// (faster) rate limit but still takes a job slot while it renders.
+// The concurrency half of start_job: one job per user and
+// MAX_CONCURRENT_JOBS server-wide.
 JobAdmission enter_job_gate(int64_t gate_id);
 
 JobAdmission start_job(const std::string& limiter_key, int64_t gate_id) {
     JobAdmission a;
     if (auto retry = g_guards->jobs_per_user.take(limiter_key)) {
-        a.refused = too_many(*retry, "That's a lot of reports in a short time — try again in " +
+        a.refused = too_many(*retry, "That's a lot of sheet reads in a short time — try again in " +
                                          std::to_string(*retry) + " seconds.");
         return a;
     }
@@ -234,8 +208,8 @@ JobAdmission enter_job_gate(int64_t gate_id) {
     auto result = g_guards->jobs.enter(gate_id);
     if (!result.ticket) {
         a.refused = result.refusal == limits::JobGate::Refusal::kUserBusy
-                        ? too_many(5, "You already have a report running — wait for it to finish.")
-                        : too_many(10, "The server is busy with other reports — try again in a "
+                        ? too_many(5, "You already have a sheet being read — wait for it to finish.")
+                        : too_many(10, "The server is busy reading other sheets — try again in a "
                                        "few seconds.");
         return a;
     }
@@ -467,42 +441,8 @@ std::string json_escape(const std::string& s) {
     return out;
 }
 
-// Turns a sheet's display name (arbitrary user-chosen text, originally a
-// Drive file name) into a safe download filename: ASCII alnum/-/_/space
-// only, everything else collapsed to '_'. This isn't just cosmetic — the
-// name is embedded in a Content-Disposition header, so it must not be able
-// to contain CR/LF (header injection) or double quotes (would break out of
-// the filename="..." value); stripping to a narrow allowlist rules out
-// both without needing to track escaping rules for the header grammar.
-std::string safe_filename_stem(const std::string& display_name) {
-    std::string out;
-    out.reserve(display_name.size());
-    for (unsigned char c : display_name) {
-        if (std::isalnum(c) || c == '-' || c == '_' || c == ' ') {
-            out.push_back(static_cast<char>(c));
-        } else {
-            out.push_back('_');
-        }
-    }
-    // Trim leading/trailing space/underscore left over from replaced runs.
-    size_t start = out.find_first_not_of(" _");
-    size_t end = out.find_last_not_of(" _");
-    if (start == std::string::npos) return "sheet";
-    return out.substr(start, end - start + 1);
-}
-
-// Fills in BrickLink data from the catalog files (see bricklink.h and
-// records::apply_bricklink). A no-op when the files aren't there.
+// The BrickLink catalog files (see bricklink.h), for /bricklink/lookup.
 bricklink::CatalogCache* g_catalog = nullptr;  // set in main()
-
-void apply_bricklink(PivotResult& pivot) {
-    if (!g_catalog || pivot.records.empty()) return;
-    std::shared_ptr<const bricklink::Catalog> catalog = g_catalog->get();
-    records::apply_bricklink(pivot, *catalog);
-}
-
-using records::check_run_size;
-using records::TooBig;
 
 // Browser modules (static/js/*.js), read into memory once at startup. Only
 // flat names like "pivot.js" ([a-z0-9_-]+ then .js) are loaded or served:
@@ -528,8 +468,10 @@ std::map<std::string, std::string> load_static_js(const std::string& dir) {
     return files;
 }
 
-// The "Order Here" tab's cells, unpivoted (what fetch_and_pivot reads, and
-// what GET /sheets/:id/values hands the browser). Throws like fetch_and_pivot.
+// The "Order Here" tab's cells, unpivoted (what GET /sheets/:id/values hands
+// the browser to pivot and render). Throws std::runtime_error (from
+// mint_access_token / oauth calls) on any Google API failure — the caller
+// turns that into an error response (see google_error).
 std::vector<std::vector<std::string>> fetch_order_rows(const Config& cfg, Db& db, int64_t user_id,
                                                        const std::string& spreadsheet_id) {
     std::string access_token = mint_access_token(cfg, db, user_id);
@@ -543,46 +485,18 @@ std::vector<std::vector<std::string>> fetch_order_rows(const Config& cfg, Db& db
     return oauth::fetch_sheet_values(access_token, spreadsheet_id, range);
 }
 
-// Fetches the "Order Here" tab for a sheet the user owns, pivots it, and
-// adds BrickLink data. Shared by every generate route. Throws std::runtime_error (from
-// mint_access_token / oauth calls) on any Google API failure — callers turn
-// that into a run-log "error" row + an error response (see google_error).
-PivotResult fetch_and_pivot(const Config& cfg, Db& db, int64_t user_id,
-                             const std::string& spreadsheet_id) {
-    PivotResult pivot = pivot_sheet(fetch_order_rows(cfg, db, user_id, spreadsheet_id));
-    check_run_size(pivot);
-    apply_bricklink(pivot);
-    return pivot;
-}
-
-// Pivots an uploaded .xlsx or .csv (see spreadsheet.h). For a workbook,
-// uses the "Order Here" tab, or failing that the first tab with orders on
-// it. Throws spreadsheet::Error (bad file) or TooBig.
-PivotResult pivot_upload(const std::string& data) {
-    PivotResult pivot = spreadsheet::is_xlsx(data)
-                            ? records::pivot_tabs(spreadsheet::read_xlsx(data, layout::kSourceTab))
-                            : records::pivot_tabs({spreadsheet::read_csv(data)});
-    apply_bricklink(pivot);
-    return pivot;
-}
-
-// The label design for a request: the sheet's saved design (or the
-// defaults), with any spec/order/hide query parameters on top.
+// A sheet's label design: the saved one (or the defaults), checked.
 struct EffectiveDesign {
     const layout::LabelSpec* spec;
     ordering::PartOrder order;
-    labels_pdf::LabelOptions options;
+    labels::LabelOptions options;
 };
 
 std::optional<EffectiveDesign> resolve_design(const std::optional<Design>& saved,
-                                              const crow::request& req, std::string* error) {
-    auto param = [&](const char* name, const std::string& fallback) {
-        const char* v = req.url_params.get(name);
-        return v ? std::string(v) : fallback;
-    };
-    std::string spec_id = param("spec", saved ? saved->label_spec : layout::kDefaultLabelSpecId);
-    std::string order_name = param("order", saved ? saved->part_order : "heaviest");
-    std::string hide = param("hide", saved ? saved->hidden_parts : labels_pdf::LabelOptions().hidden_csv());
+                                              std::string* error) {
+    std::string spec_id = saved ? saved->label_spec : layout::kDefaultLabelSpecId;
+    std::string order_name = saved ? saved->part_order : "heaviest";
+    std::string hide = saved ? saved->hidden_parts : labels::LabelOptions().hidden_csv();
 
     const layout::LabelSpec* spec = layout::find_label_spec(spec_id);
     if (!spec) spec = &layout::default_label_spec();  // a saved stock that's since been dropped
@@ -592,7 +506,7 @@ std::optional<EffectiveDesign> resolve_design(const std::optional<Design>& saved
         return std::nullopt;
     }
     // `hide` is the full list of parts switched off.
-    auto options = labels_pdf::LabelOptions::from_hidden(hide, error);
+    auto options = labels::LabelOptions::from_hidden(hide, error);
     if (!options) return std::nullopt;
     return EffectiveDesign{spec, *order, *options};
 }
@@ -606,9 +520,6 @@ constexpr const char* kRepickMessage =
 
 // Turns a failed Google call into a response the organizer can act on.
 crow::response google_error(const std::exception& e) {
-    if (auto* big = dynamic_cast<const TooBig*>(&e)) {
-        return crow::response(413, std::string("Too big: ") + big->what() + ".");
-    }
     if (dynamic_cast<const ReauthRequired*>(&e)) {
         return crow::response(401, "Your Google access has expired or was revoked — log out "
                                    "and log back in.");
@@ -633,34 +544,6 @@ crow::response google_error(const std::exception& e) {
     return crow::response(502, "Couldn't reach Google Sheets — try again in a minute.");
 }
 
-// "Download all": every report for one run, in a single .zip — labels,
-// packing checklist, parts list and lot counts (PDF and CSV), plus the
-// sheet check as text. Consumes pivot.records.
-std::string build_bundle(PivotResult& pivot, const layout::LabelSpec& spec,
-                         ordering::PartOrder order, const labels_pdf::LabelOptions& options,
-                         const std::string& stem, const std::string& image_cache) {
-    const auto sort = reports::SortBy::kLastName;
-    auto parts = ordering::summarize_parts(pivot.records, order);
-    std::string lots_csv = reports::lot_counts_csv(pivot.records, sort);
-    auto lots_pdf = reports::lot_counts_pdf(pivot.records, sort);
-
-    std::string check = records::check_text(pivot);
-
-    auto records = ordering::order_records(std::move(pivot.records), order);
-    auto as_str = [](const std::vector<uint8_t>& b) {
-        return std::string(reinterpret_cast<const char*>(b.data()), b.size());
-    };
-    return zip_writer::zip({
-        {stem + " labels.pdf", as_str(labels_pdf::build_labels_pdf(records, image_cache, spec, options))},
-        {stem + " packing checklist.pdf", as_str(reports::checklist_pdf(records))},
-        {stem + " parts.pdf", as_str(reports::parts_pdf(parts))},
-        {stem + " parts.csv", reports::parts_csv(parts)},
-        {stem + " lot counts.pdf", as_str(lots_pdf)},
-        {stem + " lot counts.csv", lots_csv},
-        {stem + " sheet check.txt", check},
-    });
-}
-
 // Drive/Sheets file ids are URL-safe base64-ish; reject anything else
 // before it's stored or put in an API URL.
 bool valid_sheet_id(const std::string& id) {
@@ -670,71 +553,10 @@ bool valid_sheet_id(const std::string& id) {
     });
 }
 
-crow::response attachment(const std::string& content_type, const std::string& filename,
-                          std::string body) {
-    crow::response res(200);
-    res.set_header("Content-Type", content_type);
-    res.set_header("Content-Disposition", "attachment; filename=\"" + filename + "\"");
-    res.body = std::move(body);
-    return res;
-}
-
 // True if a JSON request body has `key` as a string (anything else would
 // throw on .s() and surface as a 500).
 bool has_string(const crow::json::rvalue& json, const char* key) {
     return json.has(key) && json[key].t() == crow::json::type::String;
-}
-
-std::string as_string(const std::vector<uint8_t>& bytes) {
-    return std::string(reinterpret_cast<const char*>(bytes.data()), bytes.size());
-}
-
-// Recently read sheets, per (user, saved sheet), so the live preview of a
-// sheet's own labels doesn't re-read Google on every switch flip. Entries
-// last two minutes; Check sheet refreshes them. Downloads always read live.
-class PivotCache {
-public:
-    std::optional<PivotResult> get(int64_t user_id, int64_t row_id) {
-        std::lock_guard<std::mutex> lock(mu_);
-        auto it = entries_.find({user_id, row_id});
-        if (it == entries_.end()) return std::nullopt;
-        if (std::time(nullptr) - it->second.first > kTtlSeconds) {
-            entries_.erase(it);
-            return std::nullopt;
-        }
-        return it->second.second;
-    }
-    void put(int64_t user_id, int64_t row_id, const PivotResult& pivot) {
-        std::lock_guard<std::mutex> lock(mu_);
-        const std::time_t now = std::time(nullptr);
-        for (auto it = entries_.begin(); it != entries_.end();) {
-            it = now - it->second.first > kTtlSeconds ? entries_.erase(it) : std::next(it);
-        }
-        if (entries_.size() >= kMaxEntries) entries_.erase(entries_.begin());
-        entries_[{user_id, row_id}] = {now, pivot};
-    }
-    void drop(int64_t user_id, int64_t row_id) {
-        std::lock_guard<std::mutex> lock(mu_);
-        entries_.erase({user_id, row_id});
-    }
-
-private:
-    static constexpr std::time_t kTtlSeconds = 120;
-    static constexpr size_t kMaxEntries = 64;
-    std::mutex mu_;
-    std::map<std::pair<int64_t, int64_t>, std::pair<std::time_t, PivotResult>> entries_;
-};
-
-// One page of labels (a few for roll stock) — the live preview.
-std::string preview_pdf(std::vector<LabelRecord> records, const std::string& image_cache,
-                        const EffectiveDesign& design) {
-    size_t pages = design.spec->per_sheet() == 1 ? 3 : 1;
-    // Only the labels that fit on those pages need their photos fetched.
-    size_t keep = pages * static_cast<size_t>(design.spec->per_sheet());
-    auto ordered = ordering::order_records(std::move(records), design.order);
-    if (ordered.size() > keep) ordered.resize(keep);
-    return as_string(labels_pdf::build_labels_pdf(ordered, image_cache, *design.spec,
-                                                  design.options, pages));
 }
 
 }  // namespace
@@ -773,8 +595,6 @@ int main() {
 
     Guards guards(cfg);
     g_guards = &guards;
-    PivotCache pivots;
-    g_pivots = &pivots;
     g_google_enabled = cfg.google_enabled();
     if (!cfg.google_enabled()) {
         std::cerr << "Google sign-in is off (no GOOGLE_OAUTH_CLIENT_ID): uploads only" << std::endl;
@@ -1100,33 +920,8 @@ int main() {
             if (!user) return crow::response(401, "not logged in");
 
             bool removed = db->delete_sheet(user->id, row_id);
-            g_pivots->drop(user->id, row_id);
             return crow::response(removed ? 200 : 404, removed ? "deleted" : "not found");
         });
-
-    // Pivots the live sheet and reports what a generate would produce:
-    // label count plus any data issues (bad quantities, duplicates, colors
-    // with no LEGO/BrickLink match...), so they can be fixed first.
-    CROW_ROUTE(app, "/sheets/<int>/check")([&cfg, &db](const crow::request& req, int64_t row_id) {
-        auto user = current_user(*db, req);
-        if (!user) return crow::response(401, "not logged in");
-        auto owned = db->find_owned_sheet(user->id, row_id);
-        if (!owned) return crow::response(404, "sheet not found");
-        auto ticket = start_job(user->id);
-        if (!ticket.ticket) return std::move(ticket.refused);
-
-        try {
-            PivotResult pivot = fetch_and_pivot(cfg, *db, user->id, owned->sheet_id);
-            g_pivots->put(user->id, owned->sheet_row_id, pivot);
-            crow::response res(200, records::check_summary_json(pivot));
-            res.set_header("Content-Type", "application/json");
-            return res;
-        } catch (const std::exception& e) {
-            std::cerr << "check failed for sheet " << owned->sheet_row_id << ": " << e.what()
-                      << std::endl;
-            return google_error(e);
-        }
-    });
 
     // The sheet's "Order Here" cells as read from Google (same range and row
     // cap as every report), not pivoted: {"rows":[["...", ...], ...]}. For
@@ -1141,17 +936,6 @@ int main() {
 
         try {
             auto rows = fetch_order_rows(cfg, *db, user->id, owned->sheet_id);
-            // Keep the pivot for this sheet's preview too, as /check does:
-            // the dashboard reads the sheet here, then asks for a preview,
-            // and that shouldn't read Google a second time.
-            try {
-                PivotResult pivot = pivot_sheet(rows);
-                check_run_size(pivot);
-                apply_bricklink(pivot);
-                g_pivots->put(user->id, owned->sheet_row_id, pivot);
-            } catch (const TooBig&) {
-                // Nothing to preview; the browser reports it from the rows.
-            }
             std::string body = "{\"rows\":[";
             for (size_t r = 0; r < rows.size(); ++r) {
                 if (r > 0) body += ",";
@@ -1229,45 +1013,10 @@ int main() {
             return crow::response(204);
         });
 
-    // Live design preview: one page of built-in sample labels in the given
-    // stock and design (spec, order, hide). No sheet is read, so it's cheap
-    // enough to re-render on every switch flip.
-    CROW_ROUTE(app, "/preview")([&cfg, &db](const crow::request& req) {
-        auto user = current_user(*db, req);
-        if (auto retry = g_guards->preview_per_user.take(visitor_key(req, user))) {
-            return too_many(*retry, "Preview is updating too fast — wait a moment.");
-        }
-        std::string error;
-        auto design = resolve_design(std::nullopt, req, &error);
-        if (!design) return crow::response(400, error);
-        auto records = samples::sample_records();
-        // Roll stock is one label per page: show a few.
-        size_t pages = design->spec->per_sheet() == 1 ? 3 : 1;
-        auto pdf = labels_pdf::build_labels_pdf(records, cfg.data_dir + "/image_cache", *design->spec,
-                                                design->options, pages);
-        crow::response res(200, as_string(pdf));
-        res.set_header("Content-Type", "application/pdf");
-        return res;
-    });
-
-    // Printer alignment test page for a label stock.
-    CROW_ROUTE(app, "/test-page")([&db](const crow::request& req) {
-        auto user = current_user(*db, req);
-        if (auto retry = g_guards->preview_per_user.take(visitor_key(req, user))) {
-            return too_many(*retry, "Too fast — wait a moment.");
-        }
-        const char* spec_id = req.url_params.get("spec");
-        const layout::LabelSpec* spec = spec_id ? layout::find_label_spec(spec_id)
-                                                : &layout::default_label_spec();
-        if (!spec) return crow::response(400, "unknown label stock");
-        return attachment("application/pdf", spec->id + " alignment test.pdf",
-                          as_string(labels_pdf::build_test_page(*spec)));
-    });
-
     // --- For the browser-side renderer --------------------------------------
 
-    // A LEGO element photo, "<element id>.jpg", from the same cache the PDF
-    // renderer uses (downloaded from LEGO's CDN on a miss). Only digit ids
+    // A LEGO element photo, "<element id>.jpg", from the image cache
+    // (downloaded from LEGO's CDN on a miss). Only digit ids
     // are accepted and the upstream URL is always layout::image_url_for's
     // fixed host, so this can't be used to fetch anything else. The photos
     // are public and the same for everyone, so browsers may cache them.
@@ -1276,12 +1025,12 @@ int main() {
         if (auto retry = g_guards->images_per_visitor.take(visitor_key(req, user))) {
             return too_many(*retry, "Too many photo requests — slow down.");
         }
-        auto id = labels_pdf::element_id_from_image_name(name);
+        auto id = part_images::element_id_from_image_name(name);
         if (!id) return crow::response(404, "not found");
         const std::string cache_dir = cfg.data_dir + "/image_cache";
         std::string path;
-        auto state = labels_pdf::probe_image_cache(*id, cache_dir, &path);
-        if (state == labels_pdf::CachedImage::kUnknown) {
+        auto state = part_images::probe_image_cache(*id, cache_dir, &path);
+        if (state == part_images::CachedImage::kUnknown) {
             struct FetchSlot {
                 ~FetchSlot() { g_guards->image_fetches.fetch_sub(1); }
             };
@@ -1292,11 +1041,11 @@ int main() {
                 return res;
             }
             FetchSlot slot;
-            path = labels_pdf::cached_image_path(*id, layout::image_url_for(*id), cache_dir);
-            state = path.empty() ? labels_pdf::CachedImage::kMiss : labels_pdf::CachedImage::kHit;
+            path = part_images::cached_image_path(*id, layout::image_url_for(*id), cache_dir);
+            state = path.empty() ? part_images::CachedImage::kMiss : part_images::CachedImage::kHit;
         }
         std::string body;
-        if (state == labels_pdf::CachedImage::kHit) {
+        if (state == part_images::CachedImage::kHit) {
             std::ifstream in(path, std::ios::binary);
             body.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
         }
@@ -1370,140 +1119,6 @@ int main() {
         return serve_js(vendor_js, name);
     });
 
-    // Live preview of a saved sheet's own labels: the first page, in the
-    // design being edited (spec/order/hide). Reads the sheet from Google
-    // at most every couple of minutes (PivotCache).
-    CROW_ROUTE(app, "/sheets/<int>/preview").methods(crow::HTTPMethod::Post)(
-        [&cfg, &db](const crow::request& req, int64_t row_id) {
-            auto user = current_user(*db, req);
-            if (!user) return crow::response(401, "not logged in");
-            auto owned = db->find_owned_sheet(user->id, row_id);
-            if (!owned) return crow::response(404, "sheet not found");
-            if (auto retry = g_guards->preview_per_user.take(visitor_key(req, user))) {
-                return too_many(*retry, "Preview is updating too fast — wait a moment.");
-            }
-            std::string error;
-            auto design = resolve_design(db->get_design(owned->sheet_id), req, &error);
-            if (!design) return crow::response(400, error);
-            auto gate = enter_job_gate(user->id);
-            if (!gate.ticket) return std::move(gate.refused);
-            try {
-                auto pivot = g_pivots->get(user->id, owned->sheet_row_id);
-                if (!pivot) {
-                    pivot = fetch_and_pivot(cfg, *db, user->id, owned->sheet_id);
-                    g_pivots->put(user->id, owned->sheet_row_id, *pivot);
-                }
-                if (pivot->records.empty()) {
-                    return crow::response(422, "No orders on this sheet yet — use Check sheet to see why.");
-                }
-                crow::response res(200, preview_pdf(std::move(pivot->records),
-                                                    cfg.data_dir + "/image_cache", *design));
-                res.set_header("Content-Type", "application/pdf");
-                return res;
-            } catch (const std::exception& e) {
-                std::cerr << "preview failed for sheet " << owned->sheet_row_id << ": " << e.what()
-                          << std::endl;
-                return google_error(e);
-            }
-        });
-
-    // Every generate route: owner check, fetch + pivot, render, log the
-    // run. `render` gets the pivot result and returns the response (or
-    // throws). Synchronous — the file only ever exists in memory and the
-    // HTTP response; nothing is written to disk except the shared (non-
-    // sensitive) LEGO element photo cache.
-    auto generate = [&cfg, &db](const crow::request& req, int64_t row_id,
-                                const std::string& report_type, auto render) {
-        auto user = current_user(*db, req);
-        if (!user) return crow::response(401, "not logged in");
-        auto owned = db->find_owned_sheet(user->id, row_id);
-        if (!owned) return crow::response(404, "sheet not found");
-        auto ticket = start_job(user->id);
-        if (!ticket.ticket) return std::move(ticket.refused);
-
-        PivotResult pivot;
-        try {
-            pivot = fetch_and_pivot(cfg, *db, user->id, owned->sheet_id);
-        } catch (const std::exception& e) {
-            std::cerr << report_type << " fetch failed for sheet " << owned->sheet_row_id << ": "
-                      << e.what() << std::endl;
-            std::string err = "google fetch failed";
-            db->log_run(owned->sheet_row_id, report_type, 0, "error", &err);
-            return google_error(e);
-        }
-        if (pivot.records.empty()) {
-            std::string err = "no label records";
-            db->log_run(owned->sheet_row_id, report_type, 0, "error", &err);
-            return crow::response(422, std::string("No orders found on the '") +
-                                           layout::kSourceTab +
-                                           "' tab — use Check sheet to see why.");
-        }
-
-        try {
-            auto [res, item_count] = render(pivot, *owned);
-            db->log_run(owned->sheet_row_id, report_type, item_count, "ok", nullptr);
-            return std::move(res);
-        } catch (const std::exception& e) {
-            std::cerr << report_type << " generation failed for sheet " << owned->sheet_row_id
-                      << ": " << e.what() << std::endl;
-            std::string err = "generation failed";
-            db->log_run(owned->sheet_row_id, report_type, 0, "error", &err);
-            return crow::response(500, "Couldn't build the file — try again.");
-        }
-    };
-
-
-    // Labels in the sheet's saved design; spec/order/hide query parameters
-    // override it for this download.
-    CROW_ROUTE(app, "/sheets/<int>/labels").methods(crow::HTTPMethod::Post)(
-        [&](const crow::request& req, int64_t row_id) {
-            return generate(req, row_id, "labels", [&](PivotResult& pivot, const SheetOwnership& sheet) {
-                std::string error;
-                auto design = resolve_design(db->get_design(sheet.sheet_id), req, &error);
-                if (!design) return std::make_pair(crow::response(400, error), 0);
-                auto records = ordering::order_records(std::move(pivot.records), design->order);
-                std::vector<uint8_t> pdf = labels_pdf::build_labels_pdf(
-                    records, cfg.data_dir + "/image_cache", *design->spec, design->options);
-                return std::make_pair(
-                    attachment("application/pdf", safe_filename_stem(sheet.display_name) + " labels.pdf",
-                               as_string(pdf)),
-                    static_cast<int>(records.size()));
-            });
-        });
-
-    // Packing checklist: one page per person, in label order.
-    // Everything for the sheet in one .zip, in its saved design.
-    CROW_ROUTE(app, "/sheets/<int>/all").methods(crow::HTTPMethod::Post)(
-        [&](const crow::request& req, int64_t row_id) {
-            return generate(req, row_id, "bundle", [&](PivotResult& pivot, const SheetOwnership& sheet) {
-                std::string error;
-                auto design = resolve_design(db->get_design(sheet.sheet_id), req, &error);
-                if (!design) return std::make_pair(crow::response(400, error), 0);
-                int count = static_cast<int>(pivot.records.size());
-                std::string stem = safe_filename_stem(sheet.display_name);
-                return std::make_pair(
-                    attachment("application/zip", stem + " labels and reports.zip",
-                               build_bundle(pivot, *design->spec, design->order, design->options, stem,
-                                            cfg.data_dir + "/image_cache")),
-                    count);
-            });
-        });
-
-    CROW_ROUTE(app, "/sheets/<int>/checklist").methods(crow::HTTPMethod::Post)(
-        [&](const crow::request& req, int64_t row_id) {
-            return generate(req, row_id, "checklist", [&](PivotResult& pivot, const SheetOwnership& sheet) {
-                std::string error;
-                auto design = resolve_design(db->get_design(sheet.sheet_id), req, &error);
-                if (!design) return std::make_pair(crow::response(400, error), 0);
-                auto records = ordering::order_records(std::move(pivot.records), design->order);
-                return std::make_pair(
-                    attachment("application/pdf",
-                               safe_filename_stem(sheet.display_name) + " packing checklist.pdf",
-                               as_string(reports::checklist_pdf(records))),
-                    static_cast<int>(records.size()));
-            });
-        });
-
     // The sheet's label design (shared by everyone who has the sheet saved).
     CROW_ROUTE(app, "/sheets/<int>/design")([&db](const crow::request& req, int64_t row_id) {
         auto user = current_user(*db, req);
@@ -1512,7 +1127,7 @@ int main() {
         if (!owned) return crow::response(404, "sheet not found");
         std::string error;
         auto saved = db->get_design(owned->sheet_id);
-        auto design = resolve_design(saved, crow::request(), &error);
+        auto design = resolve_design(saved, &error);
         crow::json::wvalue body;
         body["spec"] = design->spec->id;
         body["order"] = std::string(design->order == ordering::PartOrder::kHeaviest   ? "heaviest"
@@ -1582,187 +1197,13 @@ int main() {
             std::string error;
             if (!spec) return crow::response(400, "unknown label stock");
             if (!ordering::parse_part_order(order)) return crow::response(400, "bad part order");
-            auto opts = labels_pdf::LabelOptions::from_hidden(hide, &error);
+            auto opts = labels::LabelOptions::from_hidden(hide, &error);
             if (!opts) return crow::response(400, error);
             db->put_design(owned->sheet_id,
                            Design{spec->id, order, opts->hidden_csv(), std::move(report_options)},
                            user->id);
             return crow::response(200, "saved");
         });
-
-    auto format_param = [](const crow::request& req) -> std::optional<std::string> {
-        const char* f = req.url_params.get("format");
-        std::string format = f ? f : "csv";
-        if (format != "csv" && format != "pdf") return std::nullopt;
-        return format;
-    };
-
-    CROW_ROUTE(app, "/sheets/<int>/lots").methods(crow::HTTPMethod::Post)(
-        [&](const crow::request& req, int64_t row_id) {
-            auto format = format_param(req);
-            if (!format) return crow::response(400, "format must be 'csv' or 'pdf'");
-
-            return generate(req, row_id, "lot_counts",
-                            [&](PivotResult& pivot, const SheetOwnership& sheet) {
-                const std::string& name = sheet.display_name;
-                const auto sort = reports::SortBy::kLastName;
-                int people = static_cast<int>(reports::lot_counts_by_person(pivot.records, sort).size());
-                std::string stem = safe_filename_stem(name) + " lot counts";
-                if (*format == "csv") {
-                    return std::make_pair(attachment("text/csv; charset=utf-8", stem + ".csv",
-                                                     reports::lot_counts_csv(pivot.records, sort)),
-                                          people);
-                }
-                return std::make_pair(
-                    attachment("application/pdf", stem + ".pdf",
-                               as_string(reports::lot_counts_pdf(pivot.records, sort))),
-                    people);
-            });
-        });
-
-    CROW_ROUTE(app, "/sheets/<int>/parts").methods(crow::HTTPMethod::Post)(
-        [&](const crow::request& req, int64_t row_id) {
-            auto format = format_param(req);
-            if (!format) return crow::response(400, "format must be 'csv' or 'pdf'");
-
-            return generate(req, row_id, "parts", [&](PivotResult& pivot, const SheetOwnership& sheet) {
-                const std::string& name = sheet.display_name;
-                std::string error;
-                auto design = resolve_design(db->get_design(sheet.sheet_id), req, &error);
-                if (!design) return std::make_pair(crow::response(400, error), 0);
-                auto parts = ordering::summarize_parts(pivot.records, design->order);
-                int count = static_cast<int>(parts.size());
-                std::string stem = safe_filename_stem(name) + " parts";
-                if (*format == "csv") {
-                    return std::make_pair(
-                        attachment("text/csv; charset=utf-8", stem + ".csv", reports::parts_csv(parts)),
-                        count);
-                }
-                return std::make_pair(
-                    attachment("application/pdf", stem + ".pdf", as_string(reports::parts_pdf(parts))),
-                    count);
-            });
-        });
-
-    // --- Uploads: anyone, signed in or not ---------------------------------
-    // The request body is the .xlsx or .csv file itself; the design comes
-    // from the query string (spec/order/hide) and `X-File-Name` (optional)
-    // names the download. The file is read in memory and never stored.
-    auto upload = [&cfg](const crow::request& req, auto render) {
-        auto admission = start_anonymous_job(client_ip(req));
-        if (!admission.ticket) return std::move(admission.refused);
-        if (req.body.empty()) return crow::response(400, "Choose an .xlsx or .csv file first.");
-        std::string error;
-        auto design = resolve_design(std::nullopt, req, &error);
-        if (!design) return crow::response(400, error);
-        // Download names follow the uploaded file's, minus its extension.
-        std::string name = req.get_header_value("X-File-Name");
-        if (size_t dot = name.rfind('.'); dot != std::string::npos) name.resize(dot);
-        std::string stem = safe_filename_stem(name);
-        if (stem == "sheet") stem = "order sheet";
-        try {
-            PivotResult pivot = pivot_upload(req.body);
-            if (pivot.records.empty() && !render.allows_empty) {
-                return crow::response(422, std::string("No orders found in that file — it needs the '") +
-                                               layout::kSourceTab +
-                                               "' tab's columns (Element ID / Part Number and a "
-                                               "column per person). Try Check file to see why.");
-            }
-            return render.fn(pivot, *design, stem);
-        } catch (const spreadsheet::Error& e) {
-            return crow::response(400, e.what());
-        } catch (const TooBig& e) {
-            return crow::response(413, std::string("Too big: ") + e.what() + ".");
-        } catch (const std::exception& e) {
-            std::cerr << "upload failed: " << e.what() << std::endl;
-            return crow::response(500, "Couldn't read that file — try again.");
-        }
-    };
-    struct Render {
-        bool allows_empty;
-        std::function<crow::response(PivotResult&, const EffectiveDesign&, const std::string&)> fn;
-    };
-    const std::string image_cache = cfg.data_dir + "/image_cache";
-
-    // Live preview of an uploaded file's own labels: the first page. Has
-    // the preview's rate limit rather than the reports'.
-    CROW_ROUTE(app, "/upload/preview").methods(crow::HTTPMethod::Post)([&](const crow::request& req) {
-        if (auto retry = g_guards->preview_per_user.take("ip:" + client_ip(req))) {
-            return too_many(*retry, "Preview is updating too fast — wait a moment.");
-        }
-        auto gate = enter_job_gate(anonymous_gate_id(client_ip(req)));
-        if (!gate.ticket) return std::move(gate.refused);
-        if (req.body.empty()) return crow::response(400, "Choose an .xlsx or .csv file first.");
-        std::string error;
-        auto design = resolve_design(std::nullopt, req, &error);
-        if (!design) return crow::response(400, error);
-        try {
-            PivotResult pivot = pivot_upload(req.body);
-            if (pivot.records.empty()) return crow::response(422, "No orders found in that file.");
-            crow::response res(200, preview_pdf(std::move(pivot.records), image_cache, *design));
-            res.set_header("Content-Type", "application/pdf");
-            return res;
-        } catch (const spreadsheet::Error& e) {
-            return crow::response(400, e.what());
-        } catch (const TooBig& e) {
-            return crow::response(413, std::string("Too big: ") + e.what() + ".");
-        } catch (const std::exception& e) {
-            std::cerr << "upload preview failed: " << e.what() << std::endl;
-            return crow::response(500, "Couldn't read that file — try again.");
-        }
-    });
-    CROW_ROUTE(app, "/upload/all").methods(crow::HTTPMethod::Post)([&](const crow::request& req) {
-        return upload(req, Render{false, [&](PivotResult& pivot, const EffectiveDesign& d,
-                                             const std::string& stem) {
-            return attachment("application/zip", stem + " labels and reports.zip",
-                              build_bundle(pivot, *d.spec, d.order, d.options, stem, image_cache));
-        }});
-    });
-    CROW_ROUTE(app, "/upload/check").methods(crow::HTTPMethod::Post)([&](const crow::request& req) {
-        return upload(req, Render{true, [](PivotResult& pivot, const EffectiveDesign&, const std::string&) {
-            crow::response res(200, records::check_summary_json(pivot));
-            res.set_header("Content-Type", "application/json");
-            return res;
-        }});
-    });
-    CROW_ROUTE(app, "/upload/labels").methods(crow::HTTPMethod::Post)([&](const crow::request& req) {
-        return upload(req, Render{false, [&](PivotResult& pivot, const EffectiveDesign& d,
-                                             const std::string& stem) {
-            auto records = ordering::order_records(std::move(pivot.records), d.order);
-            return attachment("application/pdf", stem + " labels.pdf",
-                              as_string(labels_pdf::build_labels_pdf(records, image_cache, *d.spec,
-                                                                     d.options)));
-        }});
-    });
-    CROW_ROUTE(app, "/upload/checklist").methods(crow::HTTPMethod::Post)([&](const crow::request& req) {
-        return upload(req, Render{false, [](PivotResult& pivot, const EffectiveDesign& d,
-                                            const std::string& stem) {
-            auto records = ordering::order_records(std::move(pivot.records), d.order);
-            return attachment("application/pdf", stem + " packing checklist.pdf",
-                              as_string(reports::checklist_pdf(records)));
-        }});
-    });
-    CROW_ROUTE(app, "/upload/parts").methods(crow::HTTPMethod::Post)([&](const crow::request& req) {
-        bool csv = req.url_params.get("format") && std::string(req.url_params.get("format")) == "csv";
-        return upload(req, Render{false, [csv](PivotResult& pivot, const EffectiveDesign& d,
-                                               const std::string& stem) {
-            auto parts = ordering::summarize_parts(pivot.records, d.order);
-            return csv ? attachment("text/csv; charset=utf-8", stem + " parts.csv", reports::parts_csv(parts))
-                       : attachment("application/pdf", stem + " parts.pdf",
-                                    as_string(reports::parts_pdf(parts)));
-        }});
-    });
-    CROW_ROUTE(app, "/upload/lots").methods(crow::HTTPMethod::Post)([&](const crow::request& req) {
-        bool csv = req.url_params.get("format") && std::string(req.url_params.get("format")) == "csv";
-        return upload(req, Render{false, [csv](PivotResult& pivot, const EffectiveDesign&,
-                                               const std::string& stem) {
-            const auto sort = reports::SortBy::kLastName;
-            return csv ? attachment("text/csv; charset=utf-8", stem + " lot counts.csv",
-                                    reports::lot_counts_csv(pivot.records, sort))
-                       : attachment("application/pdf", stem + " lot counts.pdf",
-                                    as_string(reports::lot_counts_pdf(pivot.records, sort)));
-        }});
-    });
 
     app.port(8080).multithreaded().run();
 }

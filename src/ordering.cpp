@@ -4,8 +4,7 @@
 #include <cctype>
 #include <map>
 #include <regex>
-
-#include "reports.h"
+#include <sstream>
 
 namespace lugbulk::ordering {
 
@@ -19,6 +18,21 @@ std::string to_upper(std::string s) {
     std::transform(s.begin(), s.end(), s.begin(),
                    [](unsigned char c) { return std::toupper(c); });
     return s;
+}
+
+std::string to_lower(std::string s) {
+    std::transform(s.begin(), s.end(), s.begin(),
+                   [](unsigned char c) { return std::tolower(c); });
+    return s;
+}
+
+// How people sort: by last name (the last whitespace-separated word,
+// lower-cased), then by the whole name — static/js/ordering.js personSortKey.
+std::pair<std::string, std::string> person_sort_key(const std::string& person) {
+    std::istringstream iss(person);
+    std::string token, last;
+    while (iss >> token) last = token;
+    return {last.empty() ? to_lower(person) : to_lower(last), to_lower(person)};
 }
 
 }  // namespace
@@ -112,8 +126,7 @@ std::vector<LabelRecord> order_records(std::vector<LabelRecord> records, PartOrd
             double qa = parse_qty(a.qty), qb = parse_qty(b.qty);
             if (qa != qb) return qa < qb;
             // Same tie-break as the lot-count report: last name, then full name.
-            return reports::person_sort_key(a.person, reports::SortBy::kLastName) <
-                   reports::person_sort_key(b.person, reports::SortBy::kLastName);
+            return person_sort_key(a.person) < person_sort_key(b.person);
         });
         int total = static_cast<int>(group.size());
         for (int i = 0; i < total; ++i) {
