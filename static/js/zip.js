@@ -1,6 +1,6 @@
 // Writes a .zip archive in memory — the browser port of src/zip_writer.cpp,
-// for "Download selected". Entries are stored uncompressed, as on the
-// server: the PDFs inside are already compressed and the CSVs are tiny.
+// for Download when several files are ticked. Entries are stored
+// uncompressed, as on the server: the PDFs inside are already compressed and the CSVs are tiny.
 // File names are UTF-8, with the zip flag that says so.
 
 let crcTable = null;

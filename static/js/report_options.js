@@ -1,5 +1,5 @@
 // Settings for the packing checklist, parts list and lot counts, and which
-// files go in the "Download selected" zip. Pure: no DOM, no storage.
+// files the Download list ticks. Pure: no DOM, no storage.
 //
 // The dashboard keeps one options object per open sheet: in localStorage
 // for uploads, and with the sheet's label design on the server for saved
