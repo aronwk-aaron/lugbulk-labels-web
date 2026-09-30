@@ -14,6 +14,7 @@
 // (`images`: Map element id -> Uint8Array); fetching them is the caller's
 // job (imageIdsFor says which).
 
+import { helveticaMeasure } from './afm.js';
 import { PDFDocument, StandardFonts, rgb } from './vendor/pdf-lib.js';
 import { orderRecords, personSortKey as orderingSortKey, summarizeParts } from './ordering.js';
 import { parseQty } from './pivot.js';
@@ -232,14 +233,13 @@ const ROW = 16;
 // Each wrapped line past a row's first adds this much to its height.
 const LINE = 11;
 
-// A table row's height for text `lines` lines tall (as the server's
-// reports::report_row_height).
+// A table row's height for text `lines` lines tall.
 export const rowHeightFor = (lines) => ROW + Math.max(0, lines - 1) * LINE;
 
 // Breaks `text` into lines no wider than `maxW` as `width` measures them,
 // at spaces; a word wider than a whole line is split between characters
 // as a last resort. Nothing is dropped but the spaces lines break at.
-// Always at least one line. As the server's pdf_text::wrap_lines.
+// Always at least one line.
 export function wrapText(text, maxW, width) {
   const lines = [];
   let line = '';
@@ -488,6 +488,8 @@ async function tablePdf({ docTitle, size, running = null, columns, rowHeight, co
   const bold = await doc.embedFont(StandardFonts.HelveticaBold);
   const regular = await doc.embedFont(StandardFonts.Helvetica);
   const [pageW, pageH] = size;
+  // Widths as labels measure them (afm.js): the AFM's, no kerning.
+  const widthOf = (font, t, sz) => helveticaMeasure(font === bold ? 'bold' : 'regular', t, sz);
 
   const widths = fitColumns(
     columns.map((c) => c.width),
@@ -518,7 +520,7 @@ async function tablePdf({ docTitle, size, running = null, columns, rowHeight, co
 
   // Cell text wraps to its column at 9 pt (see wrapText): nothing is cut.
   const wrap = (font, s, maxW, sz = 9) =>
-    wrapText(winAnsi(s), maxW, (t) => font.widthOfTextAtSize(t, sz));
+    wrapText(winAnsi(s), maxW, (t) => widthOf(font, t, sz));
   const text = (page, s, x, y, font, sz) => {
     if (s) page.drawText(s, { x, y, size: sz, font, color: BLACK });
   };
@@ -606,8 +608,8 @@ async function tablePdf({ docTitle, size, running = null, columns, rowHeight, co
       // Title and subtitle on one line when they fit, else each wrapped.
       const title = winAnsi(running.title);
       const sub = winAnsi(running.subtitle);
-      const titleW = title ? bold.widthOfTextAtSize(title, 10) + 8 : 0;
-      if (titleW + regular.widthOfTextAtSize(sub, 9) <= tableW) {
+      const titleW = title ? widthOf(bold, title, 10) + 8 : 0;
+      if (titleW + widthOf(regular, sub, 9) <= tableW) {
         text(page, title, MARGIN, y - 10, bold, 10);
         text(page, sub, MARGIN + titleW, y - 10, regular, 9);
         y -= 20;
