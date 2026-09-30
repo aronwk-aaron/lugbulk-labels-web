@@ -652,69 +652,7 @@ async function loadSavedSheets() {
             return;
           }
           await api(base, { method: 'DELETE' });
-          if (SIGNED_IN) loadSavedSheets();
-
-// --- Uploads --------------------------------------------------------------
-function uploadRequest(file) {
-  // Header values must be plain ASCII; the server only uses it for names.
-  const name = file.name.replace(/[^\x20-\x7e]/g, '_');
-  return { method: 'POST', body: file, headers: { 'X-File-Name': name, 'Content-Type': 'application/octet-stream' } };
-}
-(() => {
-  const input = document.getElementById('upload-file');
-  const nameEl = document.getElementById('upload-name');
-  const status = document.getElementById('upload-status');
-  const issues = document.getElementById('upload-issues');
-  const actions = document.getElementById('upload-actions');
-  const designQuery = () => new URLSearchParams(uploadDesign()).toString();
-  const stem = () => input.files[0].name.replace(/\.[^.]*$/, '');
-  const buttons = [];
-  const setStatus = (text, error) => {
-    status.textContent = text;
-    status.classList.toggle('error', !!error);
-    status.classList.toggle('muted', !error);
-  };
-  const add = (label, run, primary) => {
-    const b = el('button', { type: 'button', text: label });
-    if (primary) b.classList.add('primary');
-    b.disabled = true;
-    b.addEventListener('click', async () => {
-      buttons.forEach(x => x.disabled = true);
-      try { await run(); } catch (e) { setStatus(e.message, true); }
-      buttons.forEach(x => x.disabled = !input.files.length);
-    });
-    buttons.push(b);
-    actions.appendChild(b);
-  };
-  const download = (label, busy, path, suffix) => add(label, async () => {
-    setStatus(busy);
-    await downloadFrom(path(), stem() + suffix(), input.files[0]);
-    setStatus('');
-  }, label === 'Labels');
-  download('Labels', 'Making labels… (can take a minute)', () => '/upload/labels?' + designQuery(), () => ' labels.pdf');
-  add('Design', async () => openDesign(null));
-  download('Checklist', 'Making packing checklist…', () => '/upload/checklist?' + designQuery(), () => ' packing checklist.pdf');
-  download('Parts list', 'Making parts list…',
-           () => '/upload/parts?format=' + opt('report-format') + '&' + designQuery(), () => ' parts.' + opt('report-format'));
-  download('Lot counts', 'Making lot counts…', () => '/upload/lots?format=' + opt('report-format'),
-           () => ' lot counts.' + opt('report-format'));
-  add('Check file', async () => {
-    setStatus('Checking…');
-    issues.textContent = '';
-    const res = await api('/upload/check', uploadRequest(input.files[0]));
-    if (!res.ok) throw new Error(await res.text());
-    const data = await res.json();
-    setStatus(data.labels + ' labels, ' + (data.issues.length ? data.issues.length + ' issue(s):' : 'no issues found.'));
-    for (const issue of data.issues) issues.appendChild(el('li', { text: 'Row ' + issue.row + ': ' + issue.detail }));
-  });
-  input.addEventListener('change', () => {
-    const f = input.files[0];
-    nameEl.textContent = f ? f.name : 'No file chosen';
-    issues.textContent = '';
-    setStatus(f && f.size > 10 * 1024 * 1024 ? 'That file is over 10 MB — too big to upload.' : '', f && f.size > 10 * 1024 * 1024);
-    buttons.forEach(b => b.disabled = !f || f.size > 10 * 1024 * 1024);
-  });
-})();
+          loadSavedSheets();
         } catch (e) {
           delBtn.disabled = false;
         }
@@ -777,12 +715,77 @@ async function runSearch() {
   }
 }
 
-document.getElementById('search-btn').addEventListener('click', runSearch);
-document.getElementById('search-box').addEventListener('keydown', (e) => {
-  if (e.key === 'Enter') { e.preventDefault(); runSearch(); }
-});
+// Sheet search only exists for signed-in users.
+if (SIGNED_IN) {
+  document.getElementById('search-btn').addEventListener('click', runSearch);
+  document.getElementById('search-box').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); runSearch(); }
+  });
+}
 
-loadSavedSheets();
+if (SIGNED_IN) loadSavedSheets();
+
+// --- Uploads --------------------------------------------------------------
+function uploadRequest(file) {
+  // Header values must be plain ASCII; the server only uses it for names.
+  const name = file.name.replace(/[^\x20-\x7e]/g, '_');
+  return { method: 'POST', body: file, headers: { 'X-File-Name': name, 'Content-Type': 'application/octet-stream' } };
+}
+(() => {
+  const input = document.getElementById('upload-file');
+  const nameEl = document.getElementById('upload-name');
+  const status = document.getElementById('upload-status');
+  const issues = document.getElementById('upload-issues');
+  const actions = document.getElementById('upload-actions');
+  const designQuery = () => new URLSearchParams(uploadDesign()).toString();
+  const stem = () => input.files[0].name.replace(/\.[^.]*$/, '');
+  const buttons = [];
+  const setStatus = (text, error) => {
+    status.textContent = text;
+    status.classList.toggle('error', !!error);
+    status.classList.toggle('muted', !error);
+  };
+  const add = (label, run, primary) => {
+    const b = el('button', { type: 'button', text: label });
+    if (primary) b.classList.add('primary');
+    b.disabled = true;
+    b.addEventListener('click', async () => {
+      buttons.forEach(x => x.disabled = true);
+      try { await run(); } catch (e) { setStatus(e.message, true); }
+      buttons.forEach(x => x.disabled = !input.files.length);
+    });
+    buttons.push(b);
+    actions.appendChild(b);
+  };
+  const download = (label, busy, path, suffix) => add(label, async () => {
+    setStatus(busy);
+    await downloadFrom(path(), stem() + suffix(), input.files[0]);
+    setStatus('');
+  }, label === 'Labels');
+  download('Labels', 'Making labels… (can take a minute)', () => '/upload/labels?' + designQuery(), () => ' labels.pdf');
+  add('Design', async () => openDesign(null));
+  download('Checklist', 'Making packing checklist…', () => '/upload/checklist?' + designQuery(), () => ' packing checklist.pdf');
+  download('Parts list', 'Making parts list…',
+           () => '/upload/parts?format=' + opt('report-format') + '&' + designQuery(), () => ' parts.' + opt('report-format'));
+  download('Lot counts', 'Making lot counts…', () => '/upload/lots?format=' + opt('report-format'),
+           () => ' lot counts.' + opt('report-format'));
+  add('Check file', async () => {
+    setStatus('Checking…');
+    issues.textContent = '';
+    const res = await api('/upload/check', uploadRequest(input.files[0]));
+    if (!res.ok) throw new Error(await res.text());
+    const data = await res.json();
+    setStatus(data.labels + ' labels, ' + (data.issues.length ? data.issues.length + ' issue(s):' : 'no issues found.'));
+    for (const issue of data.issues) issues.appendChild(el('li', { text: 'Row ' + issue.row + ': ' + issue.detail }));
+  });
+  input.addEventListener('change', () => {
+    const f = input.files[0];
+    nameEl.textContent = f ? f.name : 'No file chosen';
+    issues.textContent = '';
+    setStatus(f && f.size > 10 * 1024 * 1024 ? 'That file is over 10 MB — too big to upload.' : '', f && f.size > 10 * 1024 * 1024);
+    buttons.forEach(b => b.disabled = !f || f.size > 10 * 1024 * 1024);
+  });
+})();
 </script>
 </body>
 </html>
