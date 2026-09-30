@@ -26,6 +26,13 @@ std::optional<int> RateLimiter::take(const std::string& key) {
     auto now = std::chrono::steady_clock::now();
     std::lock_guard<std::mutex> lock(mu_);
     sweep(now);
+    // Bound memory: a flood of distinct keys (e.g. spoofed or rotating IPs)
+    // can't grow the table without limit — past the cap, unknown keys are
+    // refused until a sweep frees room.
+    if (buckets_.size() >= kMaxKeys && !buckets_.count(key)) {
+        last_sweep_ = {};  // sweep on the next call
+        return 1;
+    }
     auto [it, inserted] = buckets_.try_emplace(key, Bucket{capacity_, now});
     Bucket& b = it->second;
     double elapsed = std::chrono::duration<double>(now - b.updated).count();

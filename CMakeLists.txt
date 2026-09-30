@@ -10,7 +10,7 @@ include(FetchContent)
 FetchContent_Declare(
     Crow
     GIT_REPOSITORY https://github.com/CrowCpp/Crow.git
-    GIT_TAG v1.2.0
+    GIT_TAG 94a011b9f7c0a991e5382927a2dbe5a7d9a056b8  # v1.2.0 (pinned by commit)
     # Cap request body size (see cmake/patch_crow.cmake).
     PATCH_COMMAND ${CMAKE_COMMAND} -DCROW_SOURCE_DIR=<SOURCE_DIR>
                   -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/patch_crow.cmake
@@ -23,7 +23,7 @@ FetchContent_MakeAvailable(Crow)
 FetchContent_Declare(
     qrcodegen
     GIT_REPOSITORY https://github.com/nayuki/QR-Code-generator.git
-    GIT_TAG v1.8.0
+    GIT_TAG 720f62bddb7226106071d4728c292cb1df519ceb  # v1.8.0 (pinned by commit)
 )
 FetchContent_MakeAvailable(qrcodegen)  # no CMakeLists of its own: just fetched; built below
 add_library(qrcodegen STATIC ${qrcodegen_SOURCE_DIR}/cpp/qrcodegen.cpp)

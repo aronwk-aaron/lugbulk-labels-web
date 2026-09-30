@@ -61,7 +61,9 @@ namespace {
 
 using namespace lugbulk;
 
-constexpr int kSessionTtlSeconds = 30 * 24 * 60 * 60;  // 30 days
+// Sign-ins last two weeks: long enough for event prep, short enough that a
+// forgotten session on a shared computer doesn't stay open for a month.
+constexpr int kSessionTtlSeconds = 14 * 24 * 60 * 60;
 constexpr int kStateTtlSeconds = 10 * 60;              // OAuth round trip window
 constexpr const char* kSessionCookie = "lugbulk_session";
 constexpr const char* kStateCookie = "lugbulk_oauth_state";
@@ -166,9 +168,19 @@ JobAdmission start_job(int64_t user_id) {
     return a;
 }
 
+// Content-Security-Policy. Scripts only run if they carry `nonce` (the
+// dashboard's own inline scripts); with no nonce, no script runs.
+std::string csp_for(const std::string& nonce) {
+    std::string script = nonce.empty() ? "'none'" : "'nonce-" + nonce + "'";
+    return "default-src 'self'; script-src " + script + "; style-src 'self' 'unsafe-inline'; "
+           "img-src 'self' data:; frame-src blob:; object-src 'none'; frame-ancestors 'none'; "
+           "base-uri 'none'; form-action 'self'";
+}
+
 struct SecurityMiddleware {
     struct context {};
     std::string origin;  // set in main() from the config
+    bool https = false;  // served over https (per the OAuth redirect URI)
 
     void before_handle(crow::request& req, crow::response& res, context&) {
         if (g_guards && req.url != "/healthz") {
@@ -194,13 +206,23 @@ struct SecurityMiddleware {
         if (res.get_header_value("Content-Type").empty()) {
             res.set_header("Content-Type", "text/plain; charset=utf-8");
         }
+        // Nearly every response is one person's data (their sheets, labels
+        // with names on them). Never let a browser, proxy or CDN cache it —
+        // otherwise a shared computer's Back button, or a caching proxy,
+        // could show one organizer's data to someone else.
+        res.set_header("Cache-Control", "no-store, private");
+        res.set_header("Pragma", "no-cache");
+        res.set_header("Vary", "Cookie");
+        res.set_header("Server", "lugbulk-labels-web");  // don't advertise the framework
+        if (https) res.set_header("Strict-Transport-Security", "max-age=31536000");
         res.set_header("X-Content-Type-Options", "nosniff");
         res.set_header("X-Frame-Options", "DENY");
         res.set_header("Referrer-Policy", "same-origin");
-        res.set_header("Content-Security-Policy",
-                       "default-src 'self'; script-src 'self' 'unsafe-inline'; "
-                       "style-src 'self' 'unsafe-inline'; img-src 'self' data:; "
-                       "frame-src blob:; frame-ancestors 'none'; base-uri 'none'; form-action 'self'");
+        // The dashboard sets its own CSP with a per-response script nonce;
+        // everything else gets this one, which allows no scripts at all.
+        if (res.get_header_value("Content-Security-Policy").empty()) {
+            res.set_header("Content-Security-Policy", csp_for(""));
+        }
     }
 };
 
@@ -590,6 +612,12 @@ crow::response attachment(const std::string& content_type, const std::string& fi
     return res;
 }
 
+// True if a JSON request body has `key` as a string (anything else would
+// throw on .s() and surface as a 500).
+bool has_string(const crow::json::rvalue& json, const char* key) {
+    return json.has(key) && json[key].t() == crow::json::type::String;
+}
+
 std::string as_string(const std::vector<uint8_t>& bytes) {
     return std::string(reinterpret_cast<const char*>(bytes.data()), bytes.size());
 }
@@ -636,6 +664,7 @@ int main() {
 
     App app;
     app.get_middleware<SecurityMiddleware>().origin = app_origin(cfg);
+    app.get_middleware<SecurityMiddleware>().https = cfg.google_redirect_uri.rfind("https://", 0) == 0;
     // Crow's default INFO access log prints the full request path, which
     // for /auth/callback includes the (single-use, but still sensitive)
     // authorization code and session-bound state as a query string. Drop
@@ -664,6 +693,8 @@ int main() {
         // containing markup can't break out of the page.
         auto tmpl = crow::mustache::load("dashboard.html");
         crow::mustache::context ctx;
+        std::string nonce = crypto::random_hex_token(16);
+        ctx["nonce"] = nonce;
         ctx["email"] = user->email;
         ctx["version"] = version;
         // Label stock picker: one <optgroup> per brand + page size.
@@ -701,6 +732,7 @@ int main() {
         ctx["spec_groups"] = std::move(groups);
         crow::response res(200, tmpl.render(ctx));
         res.set_header("Content-Type", "text/html; charset=utf-8");
+        res.set_header("Content-Security-Policy", csp_for(nonce));
         return res;
     });
 
@@ -794,6 +826,9 @@ int main() {
             res.set_header("Location", "/");
             res.add_header("Set-Cookie",
                             std::string(kSessionCookie) + "=; " + clear_cookie_attrs(cfg));
+            // Drop anything the browser kept from this session (on a shared
+            // computer, the next person shouldn't find it).
+            res.set_header("Clear-Site-Data", "\"cache\"");
             return res;
         });
 
@@ -869,7 +904,8 @@ int main() {
             if (!user) return crow::response(401, "not logged in");
 
             auto json = crow::json::load(req.body);
-            if (!json || !json.has("sheet_id") || !json.has("display_name")) {
+            if (!json || json.t() != crow::json::type::Object || !has_string(json, "sheet_id") ||
+                !has_string(json, "display_name")) {
                 return crow::response(400, "expected {\"sheet_id\":..., \"display_name\":...}");
             }
             std::string sheet_id = json["sheet_id"].s();
@@ -990,7 +1026,6 @@ int main() {
                                                 design->options, pages);
         crow::response res(200, as_string(pdf));
         res.set_header("Content-Type", "application/pdf");
-        res.set_header("Cache-Control", "no-store");
         return res;
     });
 
@@ -1109,7 +1144,7 @@ int main() {
     });
 
     CROW_ROUTE(app, "/sheets/<int>/design").methods(crow::HTTPMethod::Put)(
-        [&db](const crow::request& req, int64_t row_id) {
+        [&cfg, &db](const crow::request& req, int64_t row_id) {
             auto user = current_user(*db, req);
             if (!user) return crow::response(401, "not logged in");
             auto owned = db->find_owned_sheet(user->id, row_id);
@@ -1117,8 +1152,25 @@ int main() {
             if (auto retry = g_guards->preview_per_user.take(std::to_string(user->id))) {
                 return too_many(*retry, "Saving too fast — wait a moment.");
             }
+            // The design is shared by everyone with this Google Sheet, so only
+            // someone who can actually open it may change it. Sheets saved
+            // before that was checked on save are checked once here.
+            if (!owned->verified) {
+                try {
+                    oauth::fetch_spreadsheet_title(mint_access_token(cfg, *db, user->id),
+                                                   owned->sheet_id);
+                    db->mark_sheet_verified(owned->sheet_row_id);
+                } catch (const std::exception& e) {
+                    if (auto* http = dynamic_cast<const oauth::HttpError*>(&e);
+                        http && (http->status == 403 || http->status == 404)) {
+                        return crow::response(403, "Your Google account can't open this sheet.");
+                    }
+                    return google_error(e);
+                }
+            }
             auto json = crow::json::load(req.body);
-            if (!json || !json.has("spec") || !json.has("order") || !json.has("hide")) {
+            if (!json || json.t() != crow::json::type::Object || !has_string(json, "spec") ||
+                !has_string(json, "order") || !has_string(json, "hide")) {
                 return crow::response(400, R"(expected {"spec":..., "order":..., "hide":"..."})");
             }
             const layout::LabelSpec* spec = layout::find_label_spec(std::string(json["spec"].s()));

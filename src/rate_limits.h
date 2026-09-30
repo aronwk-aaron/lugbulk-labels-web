@@ -35,6 +35,7 @@ private:
     };
     void sweep(std::chrono::steady_clock::time_point now);  // drop full, idle buckets
 
+    static constexpr size_t kMaxKeys = 100000;
     const double capacity_, per_second_;
     std::mutex mu_;
     std::map<std::string, Bucket> buckets_;

@@ -1,0 +1,12 @@
+# Keeps the SHA-pinned GitHub Actions (and other dependencies) current:
+# Dependabot opens a pull request when a new version is published.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly

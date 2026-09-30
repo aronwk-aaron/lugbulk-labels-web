@@ -138,6 +138,22 @@ Db::Db(const std::string& path, const std::string& schema_sql_path) {
 // Brings databases created by older builds up to schema.sql, which only
 // ever CREATEs IF NOT EXISTS and so can't change an existing table.
 void Db::migrate() {
+    // sheets.verified_at (added with shared label designs).
+    {
+        bool has_verified = false;
+        Stmt s(db_, "SELECT name FROM pragma_table_info('sheets');");
+        while (s.step()) has_verified |= s.column_text(0) == "verified_at";
+        if (!has_verified) {
+            char* errmsg = nullptr;
+            if (sqlite3_exec(db_, "ALTER TABLE sheets ADD COLUMN verified_at TEXT;", nullptr,
+                             nullptr, &errmsg) != SQLITE_OK) {
+                std::string msg = std::string("db error: sheets migration failed: ") +
+                                  (errmsg ? errmsg : "unknown");
+                sqlite3_free(errmsg);
+                throw std::runtime_error(msg);
+            }
+        }
+    }
     std::string runs_sql;
     {
         Stmt s(db_, "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'runs';");
@@ -309,8 +325,10 @@ Sheet Db::add_sheet(int64_t user_id, const std::string& sheet_id,
     // sheet just updates its display name rather than erroring, since the
     // caller is re-selecting it from a picker, not intentionally duplicating.
     Stmt s(db_,
-           "INSERT INTO sheets (user_id, sheet_id, display_name) VALUES (?, ?, ?) "
-           "ON CONFLICT(user_id, sheet_id) DO UPDATE SET display_name = excluded.display_name "
+           "INSERT INTO sheets (user_id, sheet_id, display_name, verified_at) "
+           "VALUES (?, ?, ?, datetime('now')) "
+           "ON CONFLICT(user_id, sheet_id) DO UPDATE SET display_name = excluded.display_name, "
+           "  verified_at = excluded.verified_at "
            "RETURNING id, user_id, sheet_id, display_name;");
     s.bind_int64(1, user_id);
     s.bind_text(2, sheet_id);
@@ -351,7 +369,9 @@ bool Db::delete_sheet(int64_t user_id, int64_t sheet_row_id) {
 }
 
 std::optional<SheetOwnership> Db::find_owned_sheet(int64_t user_id, int64_t sheet_row_id) {
-    Stmt s(db_, "SELECT id, sheet_id, display_name FROM sheets WHERE id = ? AND user_id = ?;");
+    Stmt s(db_,
+           "SELECT id, sheet_id, display_name, verified_at IS NOT NULL FROM sheets "
+           "WHERE id = ? AND user_id = ?;");
     s.bind_int64(1, sheet_row_id);
     s.bind_int64(2, user_id);
     if (!s.step()) return std::nullopt;
@@ -359,7 +379,14 @@ std::optional<SheetOwnership> Db::find_owned_sheet(int64_t user_id, int64_t shee
     so.sheet_row_id = s.column_int64(0);
     so.sheet_id = s.column_text(1);
     so.display_name = s.column_text(2);
+    so.verified = s.column_int64(3) != 0;
     return so;
+}
+
+void Db::mark_sheet_verified(int64_t sheet_row_id) {
+    Stmt s(db_, "UPDATE sheets SET verified_at = datetime('now') WHERE id = ?;");
+    s.bind_int64(1, sheet_row_id);
+    s.step();
 }
 
 std::optional<Design> Db::get_design(const std::string& google_sheet_id) {
