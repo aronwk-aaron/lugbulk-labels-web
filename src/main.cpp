@@ -609,6 +609,7 @@ int main() {
     }
     bricklink::CatalogCache catalog(cfg.data_dir + "/bricklink");
     g_catalog = &catalog;
+    catalog.get();  // load (and log) now rather than on the first report
     if (cfg.google_enabled() && guards.allowlist.empty()) {
         std::cerr << "warning: ALLOWED_EMAILS is not set — any Google account that can pass "
                      "the OAuth consent screen can sign in" << std::endl;

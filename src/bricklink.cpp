@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <cctype>
 #include <fstream>
+#include <iostream>
 #include <vector>
 
 namespace lugbulk::bricklink {
@@ -119,6 +120,14 @@ std::shared_ptr<const Catalog> CatalogCache::get() {
     if (signature != signature_) {
         catalog_ = std::make_shared<const Catalog>(load(folder_));
         signature_ = signature;
+        if (catalog_->empty()) {
+            std::cerr << "bricklink: no catalog in " << folder_
+                      << " (needs the Parts-with-weight and Part and Color Codes downloads);"
+                         " weights will be estimated" << std::endl;
+        } else {
+            std::cerr << "bricklink: loaded " << catalog_->size() << " element codes from "
+                      << folder_ << std::endl;
+        }
     }
     return catalog_;
 }

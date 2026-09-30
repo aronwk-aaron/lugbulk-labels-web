@@ -114,11 +114,14 @@ jobs:
             -X POST --data-binary @- http://localhost:8080/sheets || true)"
           test "$code" = 000
           # The dashboard is open to anyone (uploads); sign-in is offered.
-          curl -fsS http://localhost:8080/ | grep -q 'Sign in with Google'
+          # (captured first: grep -q exiting early would fail the pipe under pipefail)
+          page="$(curl -fsS http://localhost:8080/)"
+          grep -q 'Sign in with Google' <<< "$page"
           # An uploaded workbook is read and checked (no sign-in needed).
-          curl -fsS -X POST --data-binary @tests/fixtures/sample_order.xlsx \
-            -H 'Content-Type: application/octet-stream' http://localhost:8080/upload/check \
-            | tee /dev/stderr | grep -q '"labels":6'
+          check="$(curl -fsS -X POST --data-binary @tests/fixtures/sample_order.xlsx \
+            -H 'Content-Type: application/octet-stream' http://localhost:8080/upload/check)"
+          echo "$check"
+          grep -q '"labels":6' <<< "$check"
           # Uploads over 10 MB are dropped too.
           code="$(head -c 11000000 /dev/zero | curl -s -o /dev/null -w '%{http_code}' \
             -X POST --data-binary @- http://localhost:8080/upload/check || true)"
