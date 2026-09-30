@@ -632,7 +632,7 @@ for (const [kind, r] of Object.entries(REPORTS)) {
 for (const [id, text] of reportOptions.ZIP_FILES) {
   $('zip-files').appendChild(el('label', {}, [el('input', { type: 'checkbox', id: 'zip-' + id }), document.createTextNode(text)]));
 }
-$('zip-files').addEventListener('change', () => optionsChanged($('zip-status')));
+$('zip-files').addEventListener('change', () => optionsChanged($('zip-status'), false, false));
 
 // Every settings input, read into a (normalized) options object.
 function currentOptions() {
@@ -872,13 +872,15 @@ function designChanged() {
 // A report setting changed. Typing (titles, numbers) waits a little longer
 // before the preview is remade.
 const refreshPreviewSlowly = debounce(renderPreview, 800);
-function optionsChanged(status, typing) {
+// `preview` false: the change can't affect the preview (the Download
+// ticks), so it's only saved.
+function optionsChanged(status, typing, preview = true) {
   if (!ws) return;
   ws.options = currentOptions();
   updateZipButton();
   saveStatus = status;
   setText(status, 'Saving…');
-  (typing ? refreshPreviewSlowly : refreshPreview)();
+  if (preview) (typing ? refreshPreviewSlowly : refreshPreview)();
   saveDesign();
 }
 for (const id of ['label-spec', 'part-order']) $(id).addEventListener('change', designChanged);
