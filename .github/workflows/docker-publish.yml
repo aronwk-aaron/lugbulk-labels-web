@@ -127,6 +127,14 @@ jobs:
             -H 'Content-Type: application/octet-stream' -o all.zip http://localhost:8080/upload/all
           unzip -l all.zip
           test "$(unzip -Z1 all.zip | wc -l)" = 7
+          # Live preview of the file's own labels: a PDF.
+          curl -fsS -X POST --data-binary @tests/fixtures/sample_order.xlsx \
+            -H 'Content-Type: application/octet-stream' -o preview.pdf \
+            'http://localhost:8080/upload/preview?spec=avery5162'
+          test "$(head -c 5 preview.pdf)" = '%PDF-'
+          check="$(curl -fsS -X POST --data-binary @tests/fixtures/sample_order.xlsx \
+            -H 'Content-Type: application/octet-stream' http://localhost:8080/upload/check)"
+          grep -q '"people":' <<< "$check"
           # Uploads over 10 MB are dropped too.
           # (Expect: off, or curl reports the server's "100 Continue" as the status)
           code="$(head -c 11000000 /dev/zero | curl -s -o /dev/null -w '%{http_code}' -H 'Expect:' \

@@ -21,6 +21,7 @@
 //   GET    /sheets/:id/design   the sheet's saved label design (JSON)
 //   PUT    /sheets/:id/design   save it: {"spec","order","hide"}
 //   GET    /preview             one page of sample labels (?spec=&order=&hide=)
+//   POST   /sheets/:id/preview  the first page of the sheet's own labels (?spec=&order=&hide=)
 //   GET    /test-page           printer alignment page for a stock (?spec=)
 //
 // See sql/schema.sql for the users/sheets/runs/sessions tables.
@@ -124,6 +125,8 @@ struct Guards {
           trust_proxy(cfg.trust_proxy) {}
 };
 Guards* g_guards = nullptr;  // set in main() before the server starts
+class PivotCache;
+PivotCache* g_pivots = nullptr;  // likewise
 
 // The client's IP: the socket peer, or with TRUST_PROXY the first address
 // in X-Forwarded-For (the proxy is then the socket peer).
@@ -166,11 +169,18 @@ JobAdmission start_job(int64_t user_id) {
 }
 
 // Same, for an anonymous upload: limits keyed by client IP.
-JobAdmission start_anonymous_job(const std::string& ip) {
-    // A negative gate id per IP, so it can't collide with a user id.
-    int64_t gate_id = -1 - static_cast<int64_t>(std::hash<std::string>{}(ip) & 0x3fffffffffffffffULL);
-    return start_job("ip:" + ip, gate_id);
+// A negative job-gate id per IP, so it can't collide with a user id.
+int64_t anonymous_gate_id(const std::string& ip) {
+    return -1 - static_cast<int64_t>(std::hash<std::string>{}(ip) & 0x3fffffffffffffffULL);
 }
+
+JobAdmission start_anonymous_job(const std::string& ip) {
+    return start_job("ip:" + ip, anonymous_gate_id(ip));
+}
+
+// The concurrency half of start_job alone: the live preview has its own
+// (faster) rate limit but still takes a job slot while it renders.
+JobAdmission enter_job_gate(int64_t gate_id);
 
 JobAdmission start_job(const std::string& limiter_key, int64_t gate_id) {
     JobAdmission a;
@@ -179,6 +189,11 @@ JobAdmission start_job(const std::string& limiter_key, int64_t gate_id) {
                                          std::to_string(*retry) + " seconds.");
         return a;
     }
+    return enter_job_gate(gate_id);
+}
+
+JobAdmission enter_job_gate(int64_t gate_id) {
+    JobAdmission a;
     auto result = g_guards->jobs.enter(gate_id);
     if (!result.ticket) {
         a.refused = result.refusal == limits::JobGate::Refusal::kUserBusy
@@ -563,6 +578,13 @@ std::string build_bundle(PivotResult& pivot, const layout::LabelSpec& spec,
 std::string sheet_error_json(const PivotResult& pivot) {
     crow::json::wvalue body;
     body["labels"] = pivot.records.size();
+    std::set<std::string> people, parts;
+    for (const auto& r : pivot.records) {
+        people.insert(r.person);
+        parts.insert(r.element_id);
+    }
+    body["people"] = people.size();
+    body["parts"] = parts.size();
     std::vector<crow::json::wvalue> issues;
     for (const auto& issue : pivot.issues) {
         crow::json::wvalue item;
@@ -603,6 +625,54 @@ std::string as_string(const std::vector<uint8_t>& bytes) {
     return std::string(reinterpret_cast<const char*>(bytes.data()), bytes.size());
 }
 
+// Recently read sheets, per (user, saved sheet), so the live preview of a
+// sheet's own labels doesn't re-read Google on every switch flip. Entries
+// last two minutes; Check sheet refreshes them. Downloads always read live.
+class PivotCache {
+public:
+    std::optional<PivotResult> get(int64_t user_id, int64_t row_id) {
+        std::lock_guard<std::mutex> lock(mu_);
+        auto it = entries_.find({user_id, row_id});
+        if (it == entries_.end()) return std::nullopt;
+        if (std::time(nullptr) - it->second.first > kTtlSeconds) {
+            entries_.erase(it);
+            return std::nullopt;
+        }
+        return it->second.second;
+    }
+    void put(int64_t user_id, int64_t row_id, const PivotResult& pivot) {
+        std::lock_guard<std::mutex> lock(mu_);
+        const std::time_t now = std::time(nullptr);
+        for (auto it = entries_.begin(); it != entries_.end();) {
+            it = now - it->second.first > kTtlSeconds ? entries_.erase(it) : std::next(it);
+        }
+        if (entries_.size() >= kMaxEntries) entries_.erase(entries_.begin());
+        entries_[{user_id, row_id}] = {now, pivot};
+    }
+    void drop(int64_t user_id, int64_t row_id) {
+        std::lock_guard<std::mutex> lock(mu_);
+        entries_.erase({user_id, row_id});
+    }
+
+private:
+    static constexpr std::time_t kTtlSeconds = 120;
+    static constexpr size_t kMaxEntries = 64;
+    std::mutex mu_;
+    std::map<std::pair<int64_t, int64_t>, std::pair<std::time_t, PivotResult>> entries_;
+};
+
+// One page of labels (a few for roll stock) — the live preview.
+std::string preview_pdf(std::vector<LabelRecord> records, const std::string& image_cache,
+                        const EffectiveDesign& design) {
+    size_t pages = design.spec->per_sheet() == 1 ? 3 : 1;
+    // Only the labels that fit on those pages need their photos fetched.
+    size_t keep = pages * static_cast<size_t>(design.spec->per_sheet());
+    auto ordered = ordering::order_records(std::move(records), design.order);
+    if (ordered.size() > keep) ordered.resize(keep);
+    return as_string(labels_pdf::build_labels_pdf(ordered, image_cache, *design.spec,
+                                                  design.options, pages));
+}
+
 }  // namespace
 
 int main() {
@@ -637,6 +707,8 @@ int main() {
 
     Guards guards(cfg);
     g_guards = &guards;
+    PivotCache pivots;
+    g_pivots = &pivots;
     g_google_enabled = cfg.google_enabled();
     if (!cfg.google_enabled()) {
         std::cerr << "Google sign-in is off (no GOOGLE_OAUTH_CLIENT_ID): uploads only" << std::endl;
@@ -946,6 +1018,7 @@ int main() {
             if (!user) return crow::response(401, "not logged in");
 
             bool removed = db->delete_sheet(user->id, row_id);
+            g_pivots->drop(user->id, row_id);
             return crow::response(removed ? 200 : 404, removed ? "deleted" : "not found");
         });
 
@@ -962,6 +1035,7 @@ int main() {
 
         try {
             PivotResult pivot = fetch_and_pivot(cfg, *db, user->id, owned->sheet_id);
+            g_pivots->put(user->id, owned->sheet_row_id, pivot);
             crow::response res(200, sheet_error_json(pivot));
             res.set_header("Content-Type", "application/json");
             return res;
@@ -1029,6 +1103,43 @@ int main() {
         return attachment("application/pdf", spec->id + " alignment test.pdf",
                           as_string(labels_pdf::build_test_page(*spec)));
     });
+
+    // Live preview of a saved sheet's own labels: the first page, in the
+    // design being edited (spec/order/hide). Reads the sheet from Google
+    // at most every couple of minutes (PivotCache).
+    CROW_ROUTE(app, "/sheets/<int>/preview").methods(crow::HTTPMethod::Post)(
+        [&cfg, &db](const crow::request& req, int64_t row_id) {
+            auto user = current_user(*db, req);
+            if (!user) return crow::response(401, "not logged in");
+            auto owned = db->find_owned_sheet(user->id, row_id);
+            if (!owned) return crow::response(404, "sheet not found");
+            if (auto retry = g_guards->preview_per_user.take(visitor_key(req, user))) {
+                return too_many(*retry, "Preview is updating too fast — wait a moment.");
+            }
+            std::string error;
+            auto design = resolve_design(db->get_design(owned->sheet_id), req, &error);
+            if (!design) return crow::response(400, error);
+            auto gate = enter_job_gate(user->id);
+            if (!gate.ticket) return std::move(gate.refused);
+            try {
+                auto pivot = g_pivots->get(user->id, owned->sheet_row_id);
+                if (!pivot) {
+                    pivot = fetch_and_pivot(cfg, *db, user->id, owned->sheet_id);
+                    g_pivots->put(user->id, owned->sheet_row_id, *pivot);
+                }
+                if (pivot->records.empty()) {
+                    return crow::response(422, "No orders on this sheet yet — use Check sheet to see why.");
+                }
+                crow::response res(200, preview_pdf(std::move(pivot->records),
+                                                    cfg.data_dir + "/image_cache", *design));
+                res.set_header("Content-Type", "application/pdf");
+                return res;
+            } catch (const std::exception& e) {
+                std::cerr << "preview failed for sheet " << owned->sheet_row_id << ": " << e.what()
+                          << std::endl;
+                return google_error(e);
+            }
+        });
 
     // Every generate route: owner check, fetch + pivot, render, log the
     // run. `render` gets the pivot result and returns the response (or
@@ -1282,6 +1393,33 @@ int main() {
     };
     const std::string image_cache = cfg.data_dir + "/image_cache";
 
+    // Live preview of an uploaded file's own labels: the first page. Has
+    // the preview's rate limit rather than the reports'.
+    CROW_ROUTE(app, "/upload/preview").methods(crow::HTTPMethod::Post)([&](const crow::request& req) {
+        if (auto retry = g_guards->preview_per_user.take("ip:" + client_ip(req))) {
+            return too_many(*retry, "Preview is updating too fast — wait a moment.");
+        }
+        auto gate = enter_job_gate(anonymous_gate_id(client_ip(req)));
+        if (!gate.ticket) return std::move(gate.refused);
+        if (req.body.empty()) return crow::response(400, "Choose an .xlsx or .csv file first.");
+        std::string error;
+        auto design = resolve_design(std::nullopt, req, &error);
+        if (!design) return crow::response(400, error);
+        try {
+            PivotResult pivot = pivot_upload(req.body);
+            if (pivot.records.empty()) return crow::response(422, "No orders found in that file.");
+            crow::response res(200, preview_pdf(std::move(pivot.records), image_cache, *design));
+            res.set_header("Content-Type", "application/pdf");
+            return res;
+        } catch (const spreadsheet::Error& e) {
+            return crow::response(400, e.what());
+        } catch (const TooBig& e) {
+            return crow::response(413, std::string("Too big: ") + e.what() + ".");
+        } catch (const std::exception& e) {
+            std::cerr << "upload preview failed: " << e.what() << std::endl;
+            return crow::response(500, "Couldn't read that file — try again.");
+        }
+    });
     CROW_ROUTE(app, "/upload/all").methods(crow::HTTPMethod::Post)([&](const crow::request& req) {
         return upload(req, Render{false, [&](PivotResult& pivot, const EffectiveDesign& d,
                                              const std::string& stem) {

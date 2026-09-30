@@ -15,43 +15,47 @@
   :root {
     color-scheme: light;
     --bg: #f6f7f9; --surface: #ffffff; --fg: #1d2329; --muted: #667080;
-    --border: #d9dde3; --border-strong: #b9c0c9;
+    --border: #d9dde3; --border-strong: #b9c0c9; --inset: #f1f3f6;
     --button-bg: #ffffff; --button-hover: #eef1f5;
-    --accent: #1f6feb; --accent-hover: #1a5fcc; --accent-fg: #ffffff;
-    --error: #b42318; --ok: #1a7f37; --focus: #1f6feb66;
+    --accent: #1f6feb; --accent-hover: #1a5fcc; --accent-fg: #ffffff; --accent-soft: #1f6feb14;
+    --error: #b42318; --ok: #1a7f37; --warn: #9a6700; --focus: #1f6feb66;
   }
   :root[data-theme="dark"] {
     color-scheme: dark;
     --bg: #0f1216; --surface: #171b21; --fg: #e6e9ee; --muted: #98a1ae;
-    --border: #2b323c; --border-strong: #3c4550;
+    --border: #2b323c; --border-strong: #3c4550; --inset: #12161b;
     --button-bg: #20262e; --button-hover: #29313b;
-    --accent: #4b8ff5; --accent-hover: #6aa3f7; --accent-fg: #0b0f14;
-    --error: #f97066; --ok: #4ac26b; --focus: #4b8ff566;
+    --accent: #4b8ff5; --accent-hover: #6aa3f7; --accent-fg: #0b0f14; --accent-soft: #4b8ff51f;
+    --error: #f97066; --ok: #4ac26b; --warn: #d4a72c; --focus: #4b8ff566;
   }
   @media (prefers-color-scheme: dark) {
     :root:not([data-theme="light"]) {
       color-scheme: dark;
       --bg: #0f1216; --surface: #171b21; --fg: #e6e9ee; --muted: #98a1ae;
-      --border: #2b323c; --border-strong: #3c4550;
+      --border: #2b323c; --border-strong: #3c4550; --inset: #12161b;
       --button-bg: #20262e; --button-hover: #29313b;
-      --accent: #4b8ff5; --accent-hover: #6aa3f7; --accent-fg: #0b0f14;
-      --error: #f97066; --ok: #4ac26b; --focus: #4b8ff566;
+      --accent: #4b8ff5; --accent-hover: #6aa3f7; --accent-fg: #0b0f14; --accent-soft: #4b8ff51f;
+      --error: #f97066; --ok: #4ac26b; --warn: #d4a72c; --focus: #4b8ff566;
     }
   }
   * { box-sizing: border-box; }
   body { font-family: system-ui, -apple-system, "Segoe UI", sans-serif; background: var(--bg);
-         color: var(--fg); max-width: 960px; margin: 0 auto; padding: 1.5rem 1rem 3rem;
+         color: var(--fg); max-width: 1480px; margin: 0 auto; padding: 1.25rem 1.5rem 3rem;
          line-height: 1.4; }
+  @media (max-width: 640px) { body { padding: 1rem 1rem 2.5rem; } }
   header { display: flex; justify-content: space-between; align-items: center; gap: 1rem;
-           flex-wrap: wrap; margin-bottom: 1.5rem; }
+           flex-wrap: wrap; margin-bottom: 1.25rem; }
   h1 { font-size: 1.3rem; margin: 0; }
   h1 .version { font-size: 0.75rem; color: var(--muted); font-weight: normal; margin-left: 0.3rem; }
   .who { display: flex; align-items: center; gap: 0.6rem; flex-wrap: wrap; }
   #whoami { color: var(--muted); font-size: 0.9rem; }
   section { background: var(--surface); border: 1px solid var(--border); border-radius: 10px;
-            padding: 1rem 1.25rem; margin-bottom: 1.25rem; }
-  section[hidden] { display: none; }
-  h2 { font-size: 1.05rem; margin: 0 0 0.75rem; }
+            padding: 1rem 1.25rem; margin-bottom: 1.25rem; min-width: 0; }
+  section[hidden], [hidden] { display: none !important; }
+  h2 { font-size: 1.1rem; margin: 0 0 0.6rem; }
+  h3 { font-size: 1rem; margin: 0 0 0.6rem; }
+  h4 { font-size: 0.8rem; margin: 0.9rem 0 0.4rem; text-transform: uppercase; letter-spacing: 0.04em;
+       color: var(--muted); }
   .muted, .note { color: var(--muted); font-size: 0.85rem; }
   .note { margin: 0 0 0.75rem; }
   .error { color: var(--error); }
@@ -64,6 +68,8 @@
   button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-fg); }
   button.primary:hover:not(:disabled) { background: var(--accent-hover); }
   button.danger { color: var(--error); }
+  button.big { padding: 0.65rem 1rem; font-size: 1rem; font-weight: 600; width: 100%;
+               white-space: normal; }
   select, input[type=text], input[type=search] {
     background: var(--button-bg); border: 1px solid var(--border-strong); border-radius: 6px;
     padding: 0.35rem 0.5rem; min-width: 0; }
@@ -71,47 +77,85 @@
   form#logout { display: inline; margin: 0; }
   ul { list-style: none; padding: 0; margin: 0; }
   a { color: var(--accent); }
-
-  /* Saved sheets: one card-like row each. */
-  .sheet { padding: 0.8rem 0; border-top: 1px solid var(--border); }
-  .sheet:first-child { border-top: 0; padding-top: 0.25rem; }
-  .sheet-head { display: flex; justify-content: space-between; align-items: baseline; gap: 0.75rem;
-                flex-wrap: wrap; margin-bottom: 0.5rem; }
-  .sheet-name { font-weight: 600; overflow-wrap: anywhere; }
-  .status { font-size: 0.85rem; margin: 0 0 0.5rem; }
+  .status { font-size: 0.85rem; margin: 0.5rem 0 0; }
   .status:empty { display: none; }
-  .actions { display: flex; flex-wrap: wrap; gap: 0.4rem; }
-  .actions .spacer { flex: 1; }
+  .actions { display: flex; flex-wrap: wrap; gap: 0.4rem; align-items: center; }
   .issues { font-size: 0.85rem; margin: 0.5rem 0 0; padding-left: 1.2rem; list-style: disc; }
   .issues:empty { display: none; }
   .empty { color: var(--muted); font-style: italic; }
 
-  /* Search results. */
-  .search-row { display: flex; gap: 0.5rem; margin-bottom: 0.75rem; }
+  /* Step 1: where the order sheet comes from — side by side when there's room. */
+  .sources { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 380px), 1fr));
+             gap: 1.25rem; margin-bottom: 1.25rem; align-items: start; }
+  .sources section { margin: 0; }
+  .upload-drop { display: flex; align-items: center; gap: 0.75rem; flex-wrap: wrap;
+                 border: 2px dashed var(--border-strong); border-radius: 8px; padding: 1rem;
+                 background: var(--inset); }
+  .upload-drop.dragging { border-color: var(--accent); background: var(--accent-soft); }
+  #upload-name { overflow-wrap: anywhere; }
+  label.button { cursor: pointer; background: var(--button-bg); border: 1px solid var(--border-strong);
+                 border-radius: 6px; padding: 0.35rem 0.8rem; }
+  label.button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-fg); }
+  label.button:hover { background: var(--button-hover); }
+  label.button.primary:hover { background: var(--accent-hover); }
+  a.button { display: inline-block; text-decoration: none; color: var(--fg);
+             background: var(--button-bg); border: 1px solid var(--border-strong);
+             border-radius: 6px; padding: 0.35rem 0.8rem; }
+  a.button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-fg); }
+
+  /* Saved Google Sheets: one row each; the open one is highlighted. */
+  .sheet { display: flex; align-items: center; gap: 0.6rem; padding: 0.55rem 0.6rem;
+           border-top: 1px solid var(--border); border-radius: 6px; }
+  .sheet:first-child { border-top: 0; }
+  .sheet.current { background: var(--accent-soft); }
+  .sheet .file { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+  .sheet-name { font-weight: 600; overflow-wrap: anywhere; }
+  details.find { margin-top: 0.75rem; }
+  details.find summary { cursor: pointer; color: var(--accent); font-size: 0.9rem; }
+  .search-row { display: flex; gap: 0.5rem; margin: 0.6rem 0; }
   .search-row input { flex: 1; }
   .result { display: flex; justify-content: space-between; align-items: center; gap: 0.75rem;
             padding: 0.5rem 0; border-top: 1px solid var(--border); }
   .result:first-child { border-top: 0; }
   .result .file { min-width: 0; overflow-wrap: anywhere; }
 
-  /* Controls rows. */
-  .options { display: flex; flex-wrap: wrap; align-items: center; gap: 0.6rem 1rem;
-             margin-bottom: 0.75rem; font-size: 0.9rem; }
-  .field { display: flex; flex-direction: column; gap: 0.2rem; font-size: 0.85rem; color: var(--muted); }
+  /* Step 2: the open sheet — design + downloads beside a live preview. */
+  .ws-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 1rem;
+             flex-wrap: wrap; margin-bottom: 0.75rem; }
+  .ws-head h2 { margin: 0; overflow-wrap: anywhere; }
+  .ws-head .eyebrow { font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em;
+                      color: var(--muted); }
+  #ws-summary { margin: 0.2rem 0 0; font-size: 0.95rem; }
+  #ws-summary .warn { color: var(--warn); }
+  details.issues-box { margin: 0 0 0.75rem; font-size: 0.9rem; }
+  details.issues-box summary { cursor: pointer; color: var(--warn); }
+  .ws-grid { display: grid; grid-template-columns: minmax(320px, 420px) minmax(0, 1fr); gap: 1.25rem;
+             align-items: start; }
+  @media (max-width: 900px) { .ws-grid { grid-template-columns: minmax(0, 1fr); } }
+  .panel { border: 1px solid var(--border); border-radius: 8px; padding: 0.9rem 1rem;
+           background: var(--inset); margin-bottom: 1rem; min-width: 0; }
+  .panel:last-child { margin-bottom: 0; }
+  .panel h3 .step { display: inline-block; width: 1.5rem; height: 1.5rem; line-height: 1.5rem;
+                    border-radius: 50%; background: var(--accent); color: var(--accent-fg);
+                    text-align: center; font-size: 0.85rem; margin-right: 0.4rem; }
+  .stack { display: flex; flex-direction: column; gap: 0.5rem; }
+  .field { display: flex; flex-direction: column; gap: 0.2rem; font-size: 0.85rem; color: var(--muted);
+           margin-bottom: 0.6rem; }
   .field > * { color: var(--fg); }
-  .field.grow { flex: 1 1 320px; min-width: 0; }
-  .field.grow select { width: 100%; }
-  .inline-field { display: flex; align-items: center; gap: 0.4rem; }
-
-  a.button { display: inline-block; text-decoration: none; color: var(--fg);
-             background: var(--button-bg); border: 1px solid var(--border-strong);
-             border-radius: 6px; padding: 0.35rem 0.8rem; }
-  a.button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-fg); }
-  label.button { cursor: pointer; background: var(--button-bg); border: 1px solid var(--border-strong);
-                 border-radius: 6px; padding: 0.35rem 0.8rem; }
-  label.button:hover { background: var(--button-hover); }
-  .upload-row { display: flex; align-items: center; gap: 0.75rem; flex-wrap: wrap; margin-bottom: 0.5rem; }
-  #upload-name { overflow-wrap: anywhere; }
+  .field select { width: 100%; }
+  .inline-field { display: flex; align-items: center; gap: 0.4rem; font-size: 0.9rem; }
+  .switches { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr));
+              gap: 0.35rem 0.8rem; font-size: 0.9rem; }
+  .switches label { display: flex; gap: 0.45rem; align-items: center; cursor: pointer; }
+  .switches input { width: 1rem; height: 1rem; accent-color: var(--accent); flex: none; }
+  #design-status { min-height: 1.2em; }
+  .ws-preview { position: sticky; top: 1rem; min-width: 0; }
+  @media (max-width: 900px) { .ws-preview { position: static; } }
+  .preview-head { display: flex; justify-content: space-between; align-items: baseline; gap: 0.75rem;
+                  flex-wrap: wrap; }
+  #preview { width: 100%; height: calc(100vh - 7rem); min-height: 480px; border: 1px solid var(--border);
+             border-radius: 6px; background: #fff; display: block; }
+  @media (max-width: 900px) { #preview { height: 75vh; min-height: 380px; } }
 
   /* Label stock combobox. */
   .combo { position: relative; }
@@ -127,16 +171,6 @@
   #stock-list [role=option][aria-selected=true] { font-weight: 600; }
   #stock-list [role=option].active { background: var(--button-hover); }
   #stock-list .none { padding: 0.5rem 0.75rem; color: var(--muted); font-style: italic; }
-
-  /* Design panel. */
-  .switches { display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr));
-              gap: 0.35rem 1rem; margin: 0.25rem 0 0.9rem; font-size: 0.9rem; }
-  .switches label { display: flex; gap: 0.45rem; align-items: center; cursor: pointer; }
-  .switches input { width: 1rem; height: 1rem; accent-color: var(--accent); }
-  .design-head { display: flex; justify-content: space-between; align-items: baseline; gap: 1rem;
-                 flex-wrap: wrap; }
-  #preview { width: 100%; height: 560px; border: 1px solid var(--border); border-radius: 6px;
-             background: #fff; display: block; }
 </style>
 </head>
 <body>
@@ -152,82 +186,121 @@
   </div>
 </header>
 
-{{#signed_in}}
-<section>
-  <h2>Your saved sheets</h2>
-  <p class="note">Read live from Google Sheets each time.</p>
-  <ul id="saved-list"><li class="empty">Loading&hellip;</li></ul>
-</section>
-{{/signed_in}}
-
+<div class="sources">
 <section id="upload">
-  <h2>Upload a spreadsheet</h2>
-  <p class="note">Your order sheet as an Excel <b>.xlsx</b> (Google Sheets: File → Download →
-    Microsoft Excel) or a <b>.csv</b> of its “Order Here” tab. It's read once to make your files
-    and never stored.{{^signed_in}}{{#google}} Or sign in with Google to save sheets and read
-    them live.{{/google}}{{/signed_in}}</p>
-  <div class="upload-row">
-    <label class="button" for="upload-file">Choose file…</label>
+  <h2>Upload your order sheet</h2>
+  <p class="note">An Excel <b>.xlsx</b> (Google Sheets: File → Download → Microsoft Excel) or a
+    <b>.csv</b> of the “Order Here” tab. It's read to make your files and never stored.</p>
+  <div class="upload-drop" id="upload-drop">
+    <label class="button primary" for="upload-file">Choose file…</label>
     <input type="file" id="upload-file" accept=".xlsx,.csv,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" hidden>
-    <span id="upload-name" class="muted">No file chosen</span>
+    <span id="upload-name" class="muted">or drop it here</span>
   </div>
   <p id="upload-status" class="status muted"></p>
-  <div class="actions" id="upload-actions"></div>
-  <ul class="issues" id="upload-issues"></ul>
-  <div class="options" style="margin-top:0.75rem">
-    <label class="inline-field">Parts list &amp; lot counts as
-      <select id="report-format">
-        <option value="pdf">PDF</option>
-        <option value="csv">CSV</option>
-      </select>
-    </label>
-  </div>
-</section>
-
-<section id="design" hidden>
-  <div class="design-head">
-    <h2>Label design — <span id="design-sheet"></span></h2>
-    <button type="button" id="design-close">Close</button>
-  </div>
-  <p class="note"><span id="design-note"></span> The preview uses sample parts.
-    <span id="design-status"></span></p>
-  <div class="options">
-    <div class="field grow combo">
-      <label for="stock-input" id="stock-label">Label stock</label>
-      <input id="stock-input" type="text" role="combobox" autocomplete="off" spellcheck="false"
-             aria-autocomplete="list" aria-expanded="false" aria-controls="stock-list"
-             placeholder="Type a part number, size or name — 8162, 30857, shipping…">
-      <ul id="stock-list" role="listbox" aria-labelledby="stock-label" hidden></ul>
-      <!-- The real value (and the stock list, from the server) lives here. -->
-      <select id="label-spec" hidden tabindex="-1" aria-hidden="true">
-        {{#spec_groups}}<optgroup label="{{label}}">{{#specs}}<option value="{{id}}"{{#selected}} selected{{/selected}}>{{name}}</option>{{/specs}}</optgroup>{{/spec_groups}}
-      </select>
-    </div>
-    <label class="field">Part order
-      <select id="part-order">
-        <option value="heaviest">Heaviest parts first</option>
-        <option value="lightest">Lightest parts first</option>
-        <option value="sheet">Sheet order</option>
-      </select>
-    </label>
-    <button type="button" id="test-page-btn">Alignment test page</button>
-  </div>
-  <div class="switches" id="switches"></div>
-  <iframe id="preview" title="Label preview"></iframe>
-  <p class="note" style="margin-top:0.5rem">Preview blank (some phones can't show PDFs inline)?
-    <a id="preview-open" href="#" target="_blank" rel="noopener">Open it in a new tab</a>.</p>
+  {{^signed_in}}{{#google}}<p class="note" style="margin:0.75rem 0 0">Use the same Google Sheet
+    every year? <a href="/auth/login">Sign in with Google</a> to save it and read it live.</p>{{/google}}{{/signed_in}}
 </section>
 
 {{#signed_in}}
-<section>
-  <h2>Find a sheet</h2>
-  <div class="search-row">
-    <input type="text" id="search-box" placeholder="Search your Google Sheets by name&hellip;">
-    <button id="search-btn" type="button">Search</button>
-  </div>
-  <ul id="search-results"></ul>
+<section id="saved">
+  <h2>Your Google Sheets</h2>
+  <p class="note">Read live from Google each time you open one.</p>
+  <ul id="saved-list"><li class="empty">Loading&hellip;</li></ul>
+  <details class="find" id="find">
+    <summary>Add a Google Sheet…</summary>
+    <div class="search-row">
+      <input type="text" id="search-box" placeholder="Search your Google Sheets by name&hellip;">
+      <button id="search-btn" type="button">Search</button>
+    </div>
+    <ul id="search-results"></ul>
+  </details>
 </section>
 {{/signed_in}}
+</div>
+
+<section id="workspace" hidden>
+  <div class="ws-head">
+    <div>
+      <div class="eyebrow" id="ws-kind"></div>
+      <h2 id="ws-name"></h2>
+      <p id="ws-summary" class="muted"></p>
+    </div>
+    <div class="actions">
+      <button type="button" id="ws-check">Check again</button>
+      <button type="button" id="ws-close">Close</button>
+    </div>
+  </div>
+  <details class="issues-box" id="ws-issues-box" hidden>
+    <summary id="ws-issues-summary"></summary>
+    <ul class="issues" id="ws-issues"></ul>
+  </details>
+
+  <div class="ws-grid">
+    <div>
+      <div class="panel">
+        <h3><span class="step">1</span>Label design</h3>
+        <p class="note" id="design-note"></p>
+        <div class="field combo">
+          <label for="stock-input" id="stock-label">Label stock</label>
+          <input id="stock-input" type="text" role="combobox" autocomplete="off" spellcheck="false"
+                 aria-autocomplete="list" aria-expanded="false" aria-controls="stock-list"
+                 placeholder="Type a part number, size or name — 8162, 30857, shipping…">
+          <ul id="stock-list" role="listbox" aria-labelledby="stock-label" hidden></ul>
+          <!-- The real value (and the stock list, from the server) lives here. -->
+          <select id="label-spec" hidden tabindex="-1" aria-hidden="true">
+            {{#spec_groups}}<optgroup label="{{label}}">{{#specs}}<option value="{{id}}"{{#selected}} selected{{/selected}}>{{name}}</option>{{/specs}}</optgroup>{{/spec_groups}}
+          </select>
+        </div>
+        <label class="field">Part order
+          <select id="part-order">
+            <option value="heaviest">Heaviest parts first</option>
+            <option value="lightest">Lightest parts first</option>
+            <option value="sheet">Sheet order</option>
+          </select>
+        </label>
+        <h4>Show on each label</h4>
+        <div class="switches" id="switches"></div>
+        <div class="actions" style="margin-top:0.9rem">
+          <button type="button" id="test-page-btn">Print alignment test page</button>
+        </div>
+        <p class="status muted" id="design-status"></p>
+      </div>
+
+      <div class="panel">
+        <h3><span class="step">2</span>Download</h3>
+        <div class="stack">
+          <button type="button" class="primary big" id="dl-labels">Download labels (PDF)</button>
+          <button type="button" class="big" id="dl-all">Download everything (.zip)</button>
+        </div>
+        <p class="note" style="margin:0.4rem 0 0">Everything = labels, packing checklist, parts list,
+          lot counts (PDF and CSV) and the sheet check.</p>
+        <h4>Or one report</h4>
+        <div class="actions">
+          <button type="button" id="dl-checklist">Packing checklist</button>
+          <button type="button" id="dl-parts">Parts list</button>
+          <button type="button" id="dl-lots">Lot counts</button>
+          <label class="inline-field">as
+            <select id="report-format">
+              <option value="pdf">PDF</option>
+              <option value="csv">CSV</option>
+            </select>
+          </label>
+        </div>
+        <p class="status muted" id="dl-status"></p>
+      </div>
+    </div>
+
+    <div class="ws-preview">
+      <div class="preview-head">
+        <h3>Preview <span class="muted" style="font-weight:normal">— first page of your labels</span></h3>
+        <span class="muted" id="preview-status"></span>
+      </div>
+      <iframe id="preview" title="Label preview"></iframe>
+      <p class="note" style="margin-top:0.5rem">Preview blank (some phones can't show PDFs inline)?
+        <a id="preview-open" href="#" target="_blank" rel="noopener">Open it in a new tab</a>.</p>
+    </div>
+  </div>
+</section>
 
 <script nonce="{{nonce}}">
 function el(tag, props, children) {
@@ -406,24 +479,29 @@ const stockCombo = (() => {
   return { sync };
 })();
 
-// --- Label design panel -------------------------------------------------
-// Switches for each label part; names match the server's LabelPart names.
+// --- The open sheet ("workspace") ------------------------------------------
+// Once a file is chosen or a saved sheet opened, the workspace shows its
+// summary, the label design (always visible), downloads and a live preview
+// of the sheet's own labels.
+//
+// `ws` is what's open: { kind: 'upload', file, name } or
+// { kind: 'sheet', sheet, name }. Uploads keep their design in this
+// browser; a saved sheet's design is stored with the sheet on the server
+// (shared by everyone who has it saved).
+let ws = null;
+const $ = (id) => document.getElementById(id);
+
 const PARTS = [
   ['photo', 'Part photo'], ['element_id', 'Element ID'], ['qty', 'Quantity'],
   ['lego_color', 'LEGO color'], ['bl_color', 'BrickLink color'], ['description', 'Description'],
   ['name', 'Name'], ['count', '"3 of 10" count'], ['backdrop', 'Gray tile behind clear/white parts'],
   ['swatch', 'Color swatch'], ['qr', 'QR code to BrickLink'],
 ];
-const switchesEl = document.getElementById('switches');
 for (const [id, text] of PARTS) {
   const box = el('input', { type: 'checkbox', id: 'part-' + id });
-  switchesEl.appendChild(el('label', {}, [box, document.createTextNode(text)]));
+  $('switches').appendChild(el('label', {}, [box, document.createTextNode(text)]));
 }
-// What the design panel is editing: a saved sheet (design stored on the
-// server, shared with everyone who has the sheet) or uploads (stored in
-// this browser).
-let designSheet = null;      // the saved sheet whose design is open
-let designingUpload = false;
+
 const UPLOAD_DESIGN_KEY = 'lugbulk.uploadDesign';
 function uploadDesign() {
   try {
@@ -432,253 +510,310 @@ function uploadDesign() {
   } catch (e) {}
   return { spec: 'avery5162', order: 'heaviest', hide: 'qr' };
 }
-let previewUrl = null;
-const debounce = (fn, ms) => { let t; return () => { clearTimeout(t); t = setTimeout(fn, ms); }; };
-
 function currentDesign() {
-  const hide = PARTS.filter(([id]) => !document.getElementById('part-' + id).checked).map(([id]) => id);
+  const hide = PARTS.filter(([id]) => !$('part-' + id).checked).map(([id]) => id);
   return { spec: opt('label-spec'), order: opt('part-order'), hide: hide.join(',') };
 }
+function showDesign(d) {
+  $('label-spec').value = d.spec;
+  stockCombo.sync();
+  $('part-order').value = d.order;
+  const hidden = new Set((d.hide || '').split(',').filter(Boolean));
+  for (const [id] of PARTS) $('part-' + id).checked = !hidden.has(id);
+}
+const debounce = (fn, ms) => { let t; return () => { clearTimeout(t); t = setTimeout(fn, ms); }; };
+const setText = (node, text, error) => {
+  node.textContent = text;
+  node.classList.toggle('error', !!error);
+  node.classList.toggle('muted', !error);
+};
 
-const refreshPreview = debounce(async () => {
-  const d = currentDesign();
-  const q = new URLSearchParams(d).toString();
+// Where the open sheet's routes live, and how to send a request to one:
+// an upload sends the file itself as the body.
+const wsBase = () => ws.kind === 'sheet' ? '/sheets/' + encodeURIComponent(ws.sheet.row_id) : '/upload';
+function wsRequest(path, method) {
+  return api(path, ws.kind === 'upload' ? uploadRequest(ws.file) : { method: method || 'POST' });
+}
+function uploadRequest(file) {
+  // Header values must be plain ASCII; the server only uses it for names.
+  const name = file.name.replace(/[^\x20-\x7e]/g, '_');
+  return { method: 'POST', body: file, headers: { 'X-File-Name': name, 'Content-Type': 'application/octet-stream' } };
+}
+
+// --- Preview ---
+// Paused while a download is being made (the server runs one job per
+// person at a time), then brought up to date.
+let previewUrl = null;
+let busy = 0;
+let previewStale = false;
+async function renderPreview() {
+  if (!ws) return;
+  if (busy) { previewStale = true; return; }
+  previewStale = false;
+  const status = $('preview-status');
+  setText(status, 'Updating…');
+  const opened = ws;
   try {
-    const res = await api('/preview?' + q);
+    const res = await wsRequest(wsBase() + '/preview?' + new URLSearchParams(currentDesign()));
     if (!res.ok) throw new Error(await res.text());
-    const url = URL.createObjectURL(await res.blob());
-    document.getElementById('preview').src = url + '#view=FitH';
-    document.getElementById('preview-open').href = url;
+    const blob = await res.blob();
+    if (ws !== opened) return;
+    const url = URL.createObjectURL(blob);
+    $('preview').src = url + '#view=FitH';
+    $('preview-open').href = url;
     if (previewUrl) URL.revokeObjectURL(previewUrl);
     previewUrl = url;
+    setText(status, '');
   } catch (e) {
-    document.getElementById('design-status').textContent = e.message;
+    if (ws === opened) setText(status, e.message, true);
   }
-}, 350);
+}
+const refreshPreview = debounce(renderPreview, 400);
 
+// --- Design ---
 const saveDesign = debounce(async () => {
-  const status = document.getElementById('design-status');
-  if (designingUpload) {
+  const status = $('design-status');
+  if (!ws) return;
+  if (ws.kind === 'upload') {
     try { localStorage.setItem(UPLOAD_DESIGN_KEY, JSON.stringify(currentDesign())); } catch (e) {}
-    status.textContent = 'Saved in this browser.';
+    setText(status, 'Saved in this browser.');
     return;
   }
-  if (!designSheet) return;
   try {
-    const res = await api('/sheets/' + encodeURIComponent(designSheet.row_id) + '/design', {
+    const res = await api(wsBase() + '/design', {
       method: 'PUT', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(currentDesign())
     });
     if (!res.ok) throw new Error(await res.text());
-    status.textContent = 'Saved.';
+    setText(status, 'Saved with the sheet.');
   } catch (e) {
-    status.textContent = 'Not saved: ' + e.message;
+    setText(status, 'Not saved: ' + e.message, true);
   }
 }, 700);
-
 function designChanged() {
-  document.getElementById('design-status').textContent = 'Saving…';
+  setText($('design-status'), 'Saving…');
   refreshPreview();
   saveDesign();
 }
-for (const id of ['label-spec', 'part-order']) {
-  document.getElementById(id).addEventListener('change', designChanged);
-}
-switchesEl.addEventListener('change', designChanged);
-
-async function openDesign(sheet) {
-  let d;
-  if (sheet) {
-    const res = await api('/sheets/' + encodeURIComponent(sheet.row_id) + '/design');
-    if (!res.ok) return;
-    d = await res.json();
-  } else {
-    d = uploadDesign();
-  }
-  designSheet = sheet;
-  designingUpload = !sheet;
-  document.getElementById('design-sheet').textContent = sheet ? sheet.display_name : 'uploads';
-  document.getElementById('design-note').textContent = sheet
-    ? 'Saved with the sheet: everyone who has this sheet saved prints this design.'
-    : 'Used for uploaded files, and remembered in this browser.';
-  document.getElementById('label-spec').value = d.spec;
-  stockCombo.sync();
-  document.getElementById('part-order').value = d.order;
-  const hidden = new Set(d.hide.split(',').filter(Boolean));
-  for (const [id] of PARTS) document.getElementById('part-' + id).checked = !hidden.has(id);
-  document.getElementById('design-status').textContent = '';
-  const panel = document.getElementById('design');
-  panel.hidden = false;
-  panel.scrollIntoView({ behavior: 'smooth' });
-  refreshPreview();
-}
-document.getElementById('design-close').addEventListener('click', () => {
-  document.getElementById('design').hidden = true;
-  designSheet = null;
-  designingUpload = false;
-});
-document.getElementById('test-page-btn').addEventListener('click', async () => {
+for (const id of ['label-spec', 'part-order']) $(id).addEventListener('change', designChanged);
+$('switches').addEventListener('change', designChanged);
+$('test-page-btn').addEventListener('click', async () => {
   try {
     const res = await api('/test-page?spec=' + encodeURIComponent(opt('label-spec')));
     if (!res.ok) throw new Error(await res.text());
     window.open(URL.createObjectURL(await res.blob()), '_blank');
   } catch (e) {
-    document.getElementById('design-status').textContent = e.message;
+    setText($('design-status'), e.message, true);
   }
 });
 
-// Triggers a browser download from a POST response — fetch() can't drive
-// navigation directly, so the response body is read as a blob and handed
-// to a throwaway <a download> click, then the object URL is revoked.
-async function downloadFrom(path, filenameFallback, file) {
-  const res = await api(path, file ? uploadRequest(file) : { method: 'POST' });
+// --- Check (summary + issues) ---
+async function runCheck() {
+  const summary = $('ws-summary');
+  const box = $('ws-issues-box');
+  setText(summary, 'Reading the sheet…');
+  box.hidden = true;
+  const opened = ws;
+  try {
+    const res = ws.kind === 'sheet' ? await api(wsBase() + '/check')
+                                    : await wsRequest('/upload/check');
+    if (!res.ok) throw new Error(await res.text());
+    const data = await res.json();
+    if (ws !== opened) return false;
+    const plural = (n, word) => n + ' ' + word + (n === 1 ? '' : 's');
+    summary.textContent = plural(data.labels, 'label') + ' · ' + plural(data.people, 'person').replace('persons', 'people') +
+      ' · ' + plural(data.parts, 'part');
+    summary.classList.remove('error');
+    if (data.issues.length) {
+      summary.appendChild(el('span', { class: 'warn', text: ' · ' + plural(data.issues.length, 'issue') }));
+      $('ws-issues-summary').textContent = plural(data.issues.length, 'possible problem') + ' on the sheet — show';
+      const list = $('ws-issues');
+      list.textContent = '';
+      for (const issue of data.issues) list.appendChild(el('li', { text: 'Row ' + issue.row + ': ' + issue.detail }));
+      box.hidden = false;
+    }
+    return data.labels > 0;
+  } catch (e) {
+    if (ws === opened) setText(summary, e.message || 'Could not read the sheet — try again.', true);
+    return false;
+  }
+}
+$('ws-check').addEventListener('click', async () => {
+  $('ws-check').disabled = true;
+  if (await runCheck()) renderPreview();
+  $('ws-check').disabled = false;
+});
+
+// --- Open / close ---
+async function openWorkspace(source) {
+  ws = source;
+  $('ws-kind').textContent = ws.kind === 'sheet' ? 'Google Sheet' : 'Uploaded file';
+  $('ws-name').textContent = ws.name;
+  $('design-note').textContent = ws.kind === 'sheet'
+    ? 'Saved with the sheet: everyone who has it saved prints this design.'
+    : 'Remembered in this browser for your uploads.';
+  setText($('design-status'), '');
+  setText($('dl-status'), '');
+  setText($('preview-status'), '');
+  $('preview').removeAttribute('src');
+  for (const li of document.querySelectorAll('#saved-list .sheet')) {
+    li.classList.toggle('current', ws.kind === 'sheet' && li.dataset.rowId === String(ws.sheet.row_id));
+  }
+  let design = uploadDesign();
+  if (ws.kind === 'sheet') {
+    const res = await api(wsBase() + '/design');
+    if (res.ok) design = await res.json();
+  }
+  showDesign(design);
+  const panel = $('workspace');
+  panel.hidden = false;
+  panel.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  // Check first: for a saved sheet it also reads the sheet the preview uses.
+  if (await runCheck()) renderPreview();
+}
+$('ws-close').addEventListener('click', () => {
+  ws = null;
+  $('workspace').hidden = true;
+  for (const li of document.querySelectorAll('#saved-list .sheet.current')) li.classList.remove('current');
+});
+
+// --- Downloads ---
+// fetch() can't drive a download directly, so the response is read as a
+// blob and handed to a throwaway <a download>.
+async function saveResponse(res, fallbackName) {
   if (!res.ok) {
     // Server errors are short plain-text messages meant for the user.
     const text = await res.text().catch(() => '');
     throw new Error(text || ('Request failed (' + res.status + ') — try again.'));
   }
   const blob = await res.blob();
-  const disposition = res.headers.get('Content-Disposition') || '';
-  const match = disposition.match(/filename="([^"]+)"/);
-  const filename = match ? match[1] : filenameFallback;
-
+  const match = (res.headers.get('Content-Disposition') || '').match(/filename="([^"]+)"/);
   const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = filename;
+  const a = el('a', { href: url, download: match ? match[1] : fallbackName });
   document.body.appendChild(a);
   a.click();
   a.remove();
-  URL.revokeObjectURL(url);
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+const dlButtons = ['dl-labels', 'dl-all', 'dl-checklist', 'dl-parts', 'dl-lots'].map($);
+function downloadButton(id, busyText, route, suffix, withFormat) {
+  $(id).addEventListener('click', async () => {
+    if (!ws) return;
+    const opened = ws;
+    const status = $('dl-status');
+    const q = new URLSearchParams(currentDesign());
+    if (withFormat) q.set('format', opt('report-format'));
+    const ext = withFormat ? '.' + opt('report-format') : '';
+    dlButtons.forEach(b => b.disabled = true);
+    busy++;
+    setText(status, busyText);
+    try {
+      await saveResponse(await wsRequest(wsBase() + '/' + route + '?' + q), opened.name.replace(/\.[^.]*$/, '') + suffix + ext);
+      setText(status, '');
+    } catch (e) {
+      setText(status, e.message, true);
+    }
+    busy--;
+    dlButtons.forEach(b => b.disabled = false);
+    if (previewStale) renderPreview();
+    if (opened.kind === 'sheet') refreshHistory(opened.sheet);
+  });
+}
+downloadButton('dl-labels', 'Making your labels… (can take a minute)', 'labels', ' labels.pdf');
+downloadButton('dl-all', 'Making the labels and every report… (can take a minute)', 'all', ' labels and reports.zip');
+downloadButton('dl-checklist', 'Making the packing checklist…', 'checklist', ' packing checklist.pdf');
+downloadButton('dl-parts', 'Making the parts list…', 'parts', ' parts', true);
+downloadButton('dl-lots', 'Making the lot counts…', 'lots', ' lot counts', true);
+
+// --- Upload ---
+(() => {
+  const input = $('upload-file');
+  const drop = $('upload-drop');
+  const status = $('upload-status');
+  const MAX = 10 * 1024 * 1024;
+  function take(file) {
+    if (!file) return;
+    $('upload-name').textContent = file.name;
+    if (file.size > MAX) {
+      setText(status, 'That file is over 10 MB — too big to upload.', true);
+      return;
+    }
+    setText(status, '');
+    openWorkspace({ kind: 'upload', file, name: file.name });
+  }
+  input.addEventListener('change', () => { take(input.files[0]); input.value = ''; });
+  drop.addEventListener('dragover', (e) => { e.preventDefault(); drop.classList.add('dragging'); });
+  drop.addEventListener('dragleave', () => drop.classList.remove('dragging'));
+  drop.addEventListener('drop', (e) => {
+    e.preventDefault();
+    drop.classList.remove('dragging');
+    take(e.dataTransfer.files[0]);
+  });
+})();
+
+// --- Saved Google Sheets (signed in) ---
+const REPORT_NAMES = { labels: 'labels', lot_counts: 'lot counts', parts: 'parts list',
+                       checklist: 'checklist', bundle: 'everything' };
+async function refreshHistory(sheet) {
+  const span = document.querySelector('#saved-list .sheet[data-row-id="' + sheet.row_id + '"] .history');
+  if (!span) return;
+  try {
+    const res = await api('/sheets/' + encodeURIComponent(sheet.row_id) + '/history');
+    if (!res.ok) return;
+    const run = (await res.json()).runs[0];
+    span.textContent = run
+      ? 'Last download: ' + (REPORT_NAMES[run.report_type] || run.report_type) + ', ' +
+        new Date(run.generated_at.replace(' ', 'T') + 'Z').toLocaleString() +
+        (run.status === 'ok' ? '' : ' — failed')
+      : 'Not downloaded yet';
+  } catch (e) { /* history is a nicety; ignore */ }
 }
 
 async function loadSavedSheets() {
-  const list = document.getElementById('saved-list');
+  const list = $('saved-list');
   list.textContent = '';
   try {
     const res = await api('/sheets');
     const data = await res.json();
     if (!data.sheets.length) {
-      list.appendChild(el('li', { class: 'empty result', text: 'No sheets saved yet — search below to add one.' }));
+      list.appendChild(el('li', { class: 'empty', text: 'No sheets saved yet — add one below.' }));
+      $('find').open = true;
       return;
     }
     for (const sheet of data.sheets) {
-      const nameSpan = el('span', { class: 'sheet-name', text: sheet.display_name });
-
-      const statusSpan = el('p', { class: 'status muted' });
-
-      const base = '/sheets/' + encodeURIComponent(sheet.row_id);
-      const issuesList = el('ul', { class: 'issues' });
-      const historySpan = el('span', { class: 'muted history' });
-
-      // "Last run" line, from the server's run log.
-      const REPORT_NAMES = { labels: 'Labels', lot_counts: 'Lot counts', parts: 'Parts list', checklist: 'Checklist' };
-      const refreshHistory = async () => {
-        try {
-          const res = await api(base + '/history');
-          if (!res.ok) return;
-          const run = (await res.json()).runs[0];
-          historySpan.textContent = run
-            ? 'Last run: ' + (REPORT_NAMES[run.report_type] || run.report_type) + ', ' +
-              new Date(run.generated_at.replace(' ', 'T') + 'Z').toLocaleString() +
-              (run.status === 'ok' ? ' (' + run.item_count + ')' : ' — failed')
-            : '';
-        } catch (e) { /* history is a nicety; ignore */ }
-      };
-      refreshHistory();
-
-      // One button per download; the query string carries the pickers.
-      const downloadButton = (label, busyText, pathFn, fallbackFn) => {
-        const btn = el('button', { type: 'button', text: label });
-        btn.addEventListener('click', async () => {
-          btn.disabled = true;
-          statusSpan.classList.remove('error'); statusSpan.classList.add('muted');
-          statusSpan.textContent = busyText;
-          try {
-            await downloadFrom(pathFn(), fallbackFn());
-            statusSpan.textContent = '';
-          } catch (e) {
-            statusSpan.classList.add('error'); statusSpan.classList.remove('muted');
-            statusSpan.textContent = e.message;
-          }
-          btn.disabled = false;
-          refreshHistory();
-        });
-        return btn;
-      };
-
-      const checkBtn = el('button', { type: 'button', text: 'Check sheet' });
-      checkBtn.addEventListener('click', async () => {
-        checkBtn.disabled = true;
-        statusSpan.classList.remove('error'); statusSpan.classList.add('muted');
-        statusSpan.textContent = 'Checking…';
-        issuesList.textContent = '';
-        try {
-          const res = await api(base + '/check');
-          if (!res.ok) throw new Error(await res.text());
-          const data = await res.json();
-          statusSpan.textContent = data.labels + ' labels, ' +
-            (data.issues.length ? data.issues.length + ' issue(s):' : 'no issues found.');
-          for (const issue of data.issues) {
-            issuesList.appendChild(el('li', { text: 'Row ' + issue.row + ': ' + issue.detail }));
-          }
-        } catch (e) {
-          statusSpan.classList.add('error'); statusSpan.classList.remove('muted');
-          statusSpan.textContent = e.message || 'Check failed — try again.';
-        }
-        checkBtn.disabled = false;
-      });
-
-      const designBtn = el('button', { type: 'button', text: 'Design' });
-      designBtn.addEventListener('click', () => openDesign(sheet));
-      // Labels, checklist and parts list follow the sheet's saved design.
-      const labelsBtn = downloadButton('Labels', 'Generating labels… (can take a minute)',
-        () => base + '/labels', () => sheet.display_name + ' labels.pdf');
-      const allBtn = downloadButton('Download all (.zip)', 'Making labels and every report… (can take a minute)',
-        () => base + '/all', () => sheet.display_name + ' labels and reports.zip');
-      const checklistBtn = downloadButton('Checklist', 'Generating packing checklist…',
-        () => base + '/checklist', () => sheet.display_name + ' packing checklist.pdf');
-      const partsBtn = downloadButton('Parts list', 'Generating parts list…',
-        () => base + '/parts?format=' + encodeURIComponent(opt('report-format')),
-        () => sheet.display_name + ' parts.' + opt('report-format'));
-      const lotsBtn = downloadButton('Lot counts', 'Generating lot counts…',
-        () => base + '/lots?format=' + encodeURIComponent(opt('report-format')),
-        () => sheet.display_name + ' lot counts.' + opt('report-format'));
-
-      const delBtn = el('button', { type: 'button', text: 'Remove' });
+      const openBtn = el('button', { type: 'button', class: 'primary', text: 'Open' });
+      openBtn.addEventListener('click', () => openWorkspace({ kind: 'sheet', sheet, name: sheet.display_name }));
+      const delBtn = el('button', { type: 'button', class: 'danger', text: 'Remove',
+                                    title: 'Remove from your list (the Google Sheet itself is not touched)' });
       delBtn.addEventListener('click', async () => {
+        if (!confirm('Remove "' + sheet.display_name + '" from your list? (The Google Sheet itself is not touched.)')) return;
         delBtn.disabled = true;
         try {
-          if (!confirm('Remove "' + sheet.display_name + '" from your list? (The Google Sheet itself is not touched.)')) {
-            delBtn.disabled = false;
-            return;
-          }
-          await api(base, { method: 'DELETE' });
+          await api('/sheets/' + encodeURIComponent(sheet.row_id), { method: 'DELETE' });
+          if (ws && ws.kind === 'sheet' && ws.sheet.row_id === sheet.row_id) $('ws-close').click();
           loadSavedSheets();
         } catch (e) {
           delBtn.disabled = false;
         }
       });
-
-      labelsBtn.classList.add('primary');
-      delBtn.classList.add('danger');
-      const actions = el('div', { class: 'actions' },
-        [labelsBtn, allBtn, designBtn, checklistBtn, partsBtn, lotsBtn, checkBtn, el('span', { class: 'spacer' }), delBtn]);
-      list.appendChild(el('li', { class: 'sheet' }, [
-        el('div', { class: 'sheet-head' }, [nameSpan, historySpan]),
-        statusSpan,
-        actions,
-        issuesList
-      ]));
+      const li = el('li', { class: 'sheet' }, [
+        el('div', { class: 'file' }, [el('span', { class: 'sheet-name', text: sheet.display_name }),
+                                      el('span', { class: 'muted history' })]),
+        openBtn, delBtn
+      ]);
+      li.dataset.rowId = String(sheet.row_id);
+      if (ws && ws.kind === 'sheet' && ws.sheet.row_id === sheet.row_id) li.classList.add('current');
+      list.appendChild(li);
+      refreshHistory(sheet);
     }
   } catch (e) {
-    list.appendChild(el('li', { class: 'error result', text: 'Could not load saved sheets.' }));
+    list.appendChild(el('li', { class: 'error', text: 'Could not load saved sheets.' }));
   }
 }
 
 async function runSearch() {
-  const q = document.getElementById('search-box').value.trim();
-  const results = document.getElementById('search-results');
+  const q = $('search-box').value.trim();
+  const results = $('search-results');
   results.textContent = '';
   results.appendChild(el('li', { class: 'empty result', text: 'Searching…' }));
   try {
@@ -717,79 +852,14 @@ async function runSearch() {
   }
 }
 
-// Sheet search only exists for signed-in users.
+// Sheet search and saved sheets only exist for signed-in users.
 if (SIGNED_IN) {
-  document.getElementById('search-btn').addEventListener('click', runSearch);
-  document.getElementById('search-box').addEventListener('keydown', (e) => {
+  $('search-btn').addEventListener('click', runSearch);
+  $('search-box').addEventListener('keydown', (e) => {
     if (e.key === 'Enter') { e.preventDefault(); runSearch(); }
   });
+  loadSavedSheets();
 }
-
-if (SIGNED_IN) loadSavedSheets();
-
-// --- Uploads --------------------------------------------------------------
-function uploadRequest(file) {
-  // Header values must be plain ASCII; the server only uses it for names.
-  const name = file.name.replace(/[^\x20-\x7e]/g, '_');
-  return { method: 'POST', body: file, headers: { 'X-File-Name': name, 'Content-Type': 'application/octet-stream' } };
-}
-(() => {
-  const input = document.getElementById('upload-file');
-  const nameEl = document.getElementById('upload-name');
-  const status = document.getElementById('upload-status');
-  const issues = document.getElementById('upload-issues');
-  const actions = document.getElementById('upload-actions');
-  const designQuery = () => new URLSearchParams(uploadDesign()).toString();
-  const stem = () => input.files[0].name.replace(/\.[^.]*$/, '');
-  const buttons = [];
-  const setStatus = (text, error) => {
-    status.textContent = text;
-    status.classList.toggle('error', !!error);
-    status.classList.toggle('muted', !error);
-  };
-  const add = (label, run, primary) => {
-    const b = el('button', { type: 'button', text: label });
-    if (primary) b.classList.add('primary');
-    b.disabled = true;
-    b.addEventListener('click', async () => {
-      buttons.forEach(x => x.disabled = true);
-      try { await run(); } catch (e) { setStatus(e.message, true); }
-      buttons.forEach(x => x.disabled = !input.files.length);
-    });
-    buttons.push(b);
-    actions.appendChild(b);
-  };
-  const download = (label, busy, path, suffix) => add(label, async () => {
-    setStatus(busy);
-    await downloadFrom(path(), stem() + suffix(), input.files[0]);
-    setStatus('');
-  }, label === 'Labels');
-  download('Labels', 'Making labels… (can take a minute)', () => '/upload/labels?' + designQuery(), () => ' labels.pdf');
-  download('Download all (.zip)', 'Making labels and every report… (can take a minute)',
-           () => '/upload/all?' + designQuery(), () => ' labels and reports.zip');
-  add('Design', async () => openDesign(null));
-  download('Checklist', 'Making packing checklist…', () => '/upload/checklist?' + designQuery(), () => ' packing checklist.pdf');
-  download('Parts list', 'Making parts list…',
-           () => '/upload/parts?format=' + opt('report-format') + '&' + designQuery(), () => ' parts.' + opt('report-format'));
-  download('Lot counts', 'Making lot counts…', () => '/upload/lots?format=' + opt('report-format'),
-           () => ' lot counts.' + opt('report-format'));
-  add('Check file', async () => {
-    setStatus('Checking…');
-    issues.textContent = '';
-    const res = await api('/upload/check', uploadRequest(input.files[0]));
-    if (!res.ok) throw new Error(await res.text());
-    const data = await res.json();
-    setStatus(data.labels + ' labels, ' + (data.issues.length ? data.issues.length + ' issue(s):' : 'no issues found.'));
-    for (const issue of data.issues) issues.appendChild(el('li', { text: 'Row ' + issue.row + ': ' + issue.detail }));
-  });
-  input.addEventListener('change', () => {
-    const f = input.files[0];
-    nameEl.textContent = f ? f.name : 'No file chosen';
-    issues.textContent = '';
-    setStatus(f && f.size > 10 * 1024 * 1024 ? 'That file is over 10 MB — too big to upload.' : '', f && f.size > 10 * 1024 * 1024);
-    buttons.forEach(b => b.disabled = !f || f.size > 10 * 1024 * 1024);
-  });
-})();
 </script>
 </body>
 </html>
