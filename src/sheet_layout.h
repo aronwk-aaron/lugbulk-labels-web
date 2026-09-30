@@ -1,33 +1,42 @@
-// "Order Here" tab layout constants — mirrors lugbulk-label (the CLI
-// counterpart)'s config.py. Fixed template, not per-sheet configurable in
-// v1 (see README's "Out of scope for v1").
+// "Order Here" tab layout constants and label formats — mirrors
+// lugbulk-label (the CLI counterpart)'s config.py.
 #pragma once
 
+#include <array>
 #include <cstddef>
 #include <string>
+#include <string_view>
+#include <vector>
 
 namespace lugbulk::layout {
 
 inline constexpr const char* kSourceTab = "Order Here";
 
-// 0-indexed columns within the tab. Only these three "front matter" columns
-// are assumed fixed — they've been stable across every sheet year we've
-// seen (2023-2026). Where each person's qty column actually starts, and how
-// many there are, is NOT fixed (it has shifted between years, e.g. an
-// extra "Total QTY" column pushed 2023/2024's first person from col 7 to
-// col 8) — see kSubheaderRow below for how those are found instead.
+// Front-matter columns are found by header text (first match wins, in
+// priority order). The 0-indexed positions below are only the fallback
+// for a sheet with no recognizable header row at all.
+inline constexpr std::array<std::string_view, 2> kElementIdHeaders{"Element ID", "Part Number"};
+inline constexpr std::array<std::string_view, 1> kDescriptionHeaders{"Description"};
+inline constexpr std::array<std::string_view, 2> kLegoColorHeaders{"LEGO Color", "LEGO Colour"};
+inline constexpr std::array<std::string_view, 4> kBlColorHeaders{"BL Color", "BrickLink Color",
+                                                                  "BL Colour", "Color"};
+inline constexpr std::array<std::string_view, 3> kWeightHeaders{"Weight", "Weight (g)",
+                                                                 "Weight g"};
+
 inline constexpr int kColElementId = 1;
 inline constexpr int kColDescription = 3;
-inline constexpr int kColColor = 4;
-inline constexpr int kHeaderRow = 0;    // person names live here
-inline constexpr int kSubheaderRow = 1; // "qty" / "$$" markers live here — see kQtyMarker
-inline constexpr int kDataStartRow = 2; // first row of actual part data
+inline constexpr int kColColor = 4;  // "BL Color"
+inline constexpr int kHeaderRow = 0;  // person names live here
+// Exports have been seen with extra rows (e.g. totals) above the real
+// header, so the first this-many rows are searched for it.
+inline constexpr int kHeaderSearchRows = 10;
 
-// A person's qty column is identified by its row-1 (kSubheaderRow) cell
-// reading "qty" (case-insensitive) — this has been the one reliable marker
-// across every sheet layout seen so far, unlike raw column position. Each
-// such column is paired with the $-cost column immediately after it (not
-// itself scanned for records, but skipped as part of the same person).
+// In the "qty marker" layout, a person's qty column is identified by the
+// cell below its header reading "qty" (case-insensitive) — the one
+// reliable marker across sheet years, unlike raw column position (an extra
+// "Total QTY" column in 2023/2024 pushed everyone right by one). Sheets
+// without markers use (name, running cost) header pairs instead — see
+// sheet_pivot.cpp.
 inline constexpr const char* kQtyMarker = "qty";
 
 // LEGO element photo CDN — built from Element ID, since the sheet's own
@@ -37,19 +46,40 @@ inline std::string image_url_for(const std::string& element_id) {
            element_id + ".jpg";
 }
 
-// Avery 5160: 1" x 2-5/8", 3 across x 10 down, 30/sheet. The only label
-// spec carried over to v1 (README: "--label-spec format choice" dropped).
+// A label stock. Sheet stock is laid out as a grid on its page; a roll
+// label (Dymo) is one label per page, page size = label size (stored
+// landscape). The inventory — Avery US-Letter and A4, Dymo LabelWriter —
+// lives in data/label_specs.json, generated from the gLabels template
+// database by lugbulk-label's tools/update_label_specs.py.
 struct LabelSpec {
-    double sheet_width_mm = 215.9, sheet_height_mm = 279.4;  // US Letter
-    int columns = 3, rows = 10;
-    double label_width_mm = 66.675, label_height_mm = 25.4;
-    double left_margin_mm = 4.7625, right_margin_mm = 4.7625;
-    double top_margin_mm = 12.7, bottom_margin_mm = 12.7;
-    double row_gap_mm = 0, column_gap_mm = 3.175;
+    std::string id;  // e.g. "avery5162", "dymo30857"
+    std::string brand, part, description;
+    std::string page;  // "US-Letter" | "A4" | "roll"
+    std::vector<std::string> equivalents;  // other part numbers for the same stock
+    double sheet_width_mm, sheet_height_mm;
+    int columns, rows;
+    double label_width_mm, label_height_mm;
+    double left_margin_mm, top_margin_mm;
+    double row_gap_mm, column_gap_mm;
 
     int per_sheet() const { return columns * rows; }
+    // Human-readable, e.g. `Avery 5162 — Address labels, 1.33" x 4.00", 14/sheet`.
+    std::string display_name() const;
 };
 
-inline constexpr LabelSpec kAvery5160{};
+inline constexpr const char* kDefaultLabelSpecId = "avery5162";
+
+// Loads the inventory; call once at startup. Throws std::runtime_error if
+// the file is missing or malformed, or lacks the default stock.
+void load_label_specs(const std::string& path);
+
+// The loaded inventory, in display order (brand, page size, part number).
+const std::vector<LabelSpec>& label_specs();
+
+// Looks a stock up by id, "Avery 8162", an equivalent part number, or a
+// bare part number ("5162"). nullptr if unknown.
+const LabelSpec* find_label_spec(std::string_view name);
+
+const LabelSpec& default_label_spec();
 
 }  // namespace lugbulk::layout

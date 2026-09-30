@@ -50,6 +50,16 @@ std::string random_hex_token(size_t n_bytes) {
     return hex_encode(random_bytes(n_bytes));
 }
 
+std::string sha256_hex(const std::string& data) {
+    std::vector<uint8_t> digest(EVP_MAX_MD_SIZE);
+    unsigned int len = 0;
+    if (EVP_Digest(data.data(), data.size(), digest.data(), &len, EVP_sha256(), nullptr) != 1) {
+        throw_openssl_error("SHA-256 failed");
+    }
+    digest.resize(len);
+    return hex_encode(digest);
+}
+
 std::string base64_encode(const std::vector<uint8_t>& data) {
     if (data.empty()) return "";
     // EVP_EncodeBlock has no newlines and is simplest for a single-shot blob.

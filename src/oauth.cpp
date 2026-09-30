@@ -80,8 +80,8 @@ std::string http_post_form(const std::string& url, const std::string& body) {
     long status = 0;
     curl_easy_getinfo(curl.get(), CURLINFO_RESPONSE_CODE, &status);
     if (status < 200 || status >= 300) {
-        throw std::runtime_error("oauth error: token endpoint returned HTTP " +
-                                  std::to_string(status));
+        throw HttpError("oauth error: token endpoint returned HTTP " + std::to_string(status),
+                        status);
     }
     return response;
 }
@@ -127,8 +127,8 @@ std::string http_get_bearer(const std::string& url, const std::string& bearer_to
     long status = 0;
     curl_easy_getinfo(curl.get(), CURLINFO_RESPONSE_CODE, &status);
     if (status < 200 || status >= 300) {
-        throw std::runtime_error("oauth error: userinfo endpoint returned HTTP " +
-                                  std::to_string(status));
+        throw HttpError("oauth error: Google API returned HTTP " + std::to_string(status),
+                        status);
     }
     return response;
 }

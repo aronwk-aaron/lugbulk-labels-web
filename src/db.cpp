@@ -58,6 +58,18 @@ public:
         if (sqlite3_bind_int(stmt_, idx, v) != SQLITE_OK) throw_sqlite_error(db_, "bind_int failed");
     }
 
+    void bind_double(int idx, double v) {
+        if (sqlite3_bind_double(stmt_, idx, v) != SQLITE_OK)
+            throw_sqlite_error(db_, "bind_double failed");
+    }
+    // Rewinds for re-execution with new bindings.
+    void reset() {
+        sqlite3_reset(stmt_);
+        sqlite3_clear_bindings(stmt_);
+    }
+    bool column_is_null(int idx) { return sqlite3_column_type(stmt_, idx) == SQLITE_NULL; }
+    double column_double(int idx) { return sqlite3_column_double(stmt_, idx); }
+
     // Returns true if a row is available (SQLITE_ROW), false on SQLITE_DONE.
     bool step() {
         int rc = sqlite3_step(stmt_);
@@ -119,6 +131,45 @@ Db::Db(const std::string& path, const std::string& schema_sql_path) {
                            (errmsg ? errmsg : "unknown");
         sqlite3_free(errmsg);
         throw std::runtime_error(msg);
+    }
+    migrate();
+}
+
+// Brings databases created by older builds up to schema.sql, which only
+// ever CREATEs IF NOT EXISTS and so can't change an existing table.
+void Db::migrate() {
+    std::string runs_sql;
+    {
+        Stmt s(db_, "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'runs';");
+        if (s.step()) runs_sql = s.column_text(0);
+    }
+    // v1 runs.report_type CHECK didn't allow 'parts'. SQLite can't alter a
+    // CHECK constraint, so rebuild the table.
+    if (!runs_sql.empty() && runs_sql.find("'parts'") == std::string::npos) {
+        const char* sql =
+            "BEGIN;"
+            "CREATE TABLE runs_new ("
+            "  id INTEGER PRIMARY KEY AUTOINCREMENT,"
+            "  sheet_id INTEGER NOT NULL REFERENCES sheets(id) ON DELETE CASCADE,"
+            "  report_type TEXT NOT NULL CHECK (report_type IN ('labels', 'lot_counts', 'parts')),"
+            "  generated_at TEXT NOT NULL DEFAULT (datetime('now')),"
+            "  item_count INTEGER NOT NULL,"
+            "  status TEXT NOT NULL CHECK (status IN ('ok', 'error')),"
+            "  error_message TEXT);"
+            "INSERT INTO runs_new SELECT id, sheet_id, report_type, generated_at, item_count, "
+            "  status, error_message FROM runs;"
+            "DROP TABLE runs;"
+            "ALTER TABLE runs_new RENAME TO runs;"
+            "CREATE INDEX IF NOT EXISTS idx_runs_sheet ON runs(sheet_id, generated_at DESC);"
+            "COMMIT;";
+        char* errmsg = nullptr;
+        if (sqlite3_exec(db_, sql, nullptr, nullptr, &errmsg) != SQLITE_OK) {
+            std::string msg = std::string("db error: runs migration failed: ") +
+                              (errmsg ? errmsg : "unknown");
+            sqlite3_free(errmsg);
+            sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
+            throw std::runtime_error(msg);
+        }
     }
 }
 
@@ -192,18 +243,19 @@ std::optional<std::vector<uint8_t>> Db::get_refresh_token_enc(int64_t user_id) {
 
 Session Db::create_session(int64_t user_id, int ttl_seconds) {
     std::string token = crypto::random_hex_token(32);  // 256 bits, unguessable
+    // Only the hash is stored; the raw token lives in the user's cookie.
     Stmt s(db_,
            "INSERT INTO sessions (token, user_id, expires_at) "
            "VALUES (?, ?, datetime('now', ?)) "
-           "RETURNING token, user_id, expires_at;");
-    s.bind_text(1, token);
+           "RETURNING user_id, expires_at;");
+    s.bind_text(1, crypto::sha256_hex(token));
     s.bind_int64(2, user_id);
     s.bind_text(3, "+" + std::to_string(ttl_seconds) + " seconds");
     if (!s.step()) throw_sqlite_error(db_, "create_session RETURNING produced no row");
     Session sess;
-    sess.token = s.column_text(0);
-    sess.user_id = s.column_int64(1);
-    sess.expires_at = s.column_text(2);
+    sess.token = token;
+    sess.user_id = s.column_int64(0);
+    sess.expires_at = s.column_text(1);
     return sess;
 }
 
@@ -212,7 +264,7 @@ std::optional<User> Db::find_user_by_session(const std::string& token) {
            "SELECT u.id, u.google_sub, u.email "
            "FROM sessions s JOIN users u ON u.id = s.user_id "
            "WHERE s.token = ? AND s.expires_at > datetime('now');");
-    s.bind_text(1, token);
+    s.bind_text(1, crypto::sha256_hex(token));
     if (!s.step()) return std::nullopt;
     User u;
     u.id = s.column_int64(0);
@@ -223,7 +275,7 @@ std::optional<User> Db::find_user_by_session(const std::string& token) {
 
 void Db::delete_session(const std::string& token) {
     Stmt s(db_, "DELETE FROM sessions WHERE token = ?;");
-    s.bind_text(1, token);
+    s.bind_text(1, crypto::sha256_hex(token));
     s.step();
 }
 
@@ -271,11 +323,12 @@ std::vector<Sheet> Db::list_sheets(int64_t user_id) {
 }
 
 bool Db::delete_sheet(int64_t user_id, int64_t sheet_row_id) {
-    Stmt s(db_, "DELETE FROM sheets WHERE id = ? AND user_id = ?;");
+    // RETURNING rather than sqlite3_changes(): the connection is shared by
+    // Crow's worker threads, so changes() could report another request's write.
+    Stmt s(db_, "DELETE FROM sheets WHERE id = ? AND user_id = ? RETURNING id;");
     s.bind_int64(1, sheet_row_id);
     s.bind_int64(2, user_id);
-    s.step();
-    return sqlite3_changes(db_) > 0;
+    return s.step();
 }
 
 std::optional<SheetOwnership> Db::find_owned_sheet(int64_t user_id, int64_t sheet_row_id) {
@@ -288,6 +341,59 @@ std::optional<SheetOwnership> Db::find_owned_sheet(int64_t user_id, int64_t shee
     so.sheet_id = s.column_text(1);
     so.display_name = s.column_text(2);
     return so;
+}
+
+std::vector<Run> Db::list_runs(int64_t sheet_row_id, int limit) {
+    Stmt s(db_,
+           "SELECT report_type, generated_at, item_count, status, COALESCE(error_message, '') "
+           "FROM runs WHERE sheet_id = ? ORDER BY generated_at DESC, id DESC LIMIT ?;");
+    s.bind_int64(1, sheet_row_id);
+    s.bind_int(2, limit);
+    std::vector<Run> out;
+    while (s.step()) {
+        out.push_back({s.column_text(0), s.column_text(1), static_cast<int>(s.column_int64(2)),
+                       s.column_text(3), s.column_text(4)});
+    }
+    return out;
+}
+
+std::map<std::string, BrickLinkPart> Db::get_bricklink_parts(
+    const std::vector<std::string>& element_ids) {
+    std::map<std::string, BrickLinkPart> out;
+    Stmt s(db_,
+           "SELECT element_id, part_no, color, weight, fetched_at FROM bricklink_parts "
+           "WHERE element_id = ?;");
+    for (const auto& id : element_ids) {
+        s.reset();
+        s.bind_text(1, id);
+        if (!s.step()) continue;
+        BrickLinkPart p;
+        p.element_id = s.column_text(0);
+        p.part_no = s.column_text(1);
+        p.color = s.column_text(2);
+        if (!s.column_is_null(3)) p.weight = s.column_double(3);
+        p.fetched_at = s.column_int64(4);
+        out.emplace(p.element_id, std::move(p));
+    }
+    return out;
+}
+
+void Db::put_bricklink_part(const BrickLinkPart& part) {
+    Stmt s(db_,
+           "INSERT INTO bricklink_parts (element_id, part_no, color, weight, fetched_at) "
+           "VALUES (?, ?, ?, ?, ?) "
+           "ON CONFLICT(element_id) DO UPDATE SET part_no = excluded.part_no, "
+           "color = excluded.color, weight = excluded.weight, fetched_at = excluded.fetched_at;");
+    s.bind_text(1, part.element_id);
+    s.bind_text(2, part.part_no);
+    s.bind_text(3, part.color);
+    if (part.weight) {
+        s.bind_double(4, *part.weight);
+    } else {
+        s.bind_null(4);
+    }
+    s.bind_int64(5, part.fetched_at);
+    s.step();
 }
 
 void Db::log_run(int64_t sheet_row_id, const std::string& report_type, int item_count,

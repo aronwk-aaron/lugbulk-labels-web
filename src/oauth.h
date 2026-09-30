@@ -6,12 +6,21 @@
 #pragma once
 
 #include <cstdint>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
 #include "config.h"
 
 namespace lugbulk::oauth {
+
+// A Google API call that got a non-2xx answer. `status` lets callers turn
+// e.g. a 403/404 on a sheet into a useful message for the user.
+struct HttpError : std::runtime_error {
+    long status;
+    HttpError(const std::string& what, long status_code)
+        : std::runtime_error(what), status(status_code) {}
+};
 
 // Everything Google gave us for one authorization-code exchange.
 struct TokenResponse {

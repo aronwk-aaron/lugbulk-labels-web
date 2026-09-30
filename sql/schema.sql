@@ -30,9 +30,9 @@ CREATE TABLE IF NOT EXISTS sheets (
 CREATE TABLE IF NOT EXISTS runs (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
     sheet_id      INTEGER NOT NULL REFERENCES sheets(id) ON DELETE CASCADE,
-    report_type   TEXT NOT NULL CHECK (report_type IN ('labels', 'lot_counts')),
+    report_type   TEXT NOT NULL CHECK (report_type IN ('labels', 'lot_counts', 'parts')),
     generated_at  TEXT NOT NULL DEFAULT (datetime('now')),
-    item_count    INTEGER NOT NULL,  -- label count, or lot count depending on report_type
+    item_count    INTEGER NOT NULL,  -- labels, people, or parts, depending on report_type
     status        TEXT NOT NULL CHECK (status IN ('ok', 'error')),
     error_message TEXT  -- set when status = 'error'; NULL otherwise
 );
@@ -44,10 +44,24 @@ CREATE INDEX IF NOT EXISTS idx_runs_sheet ON runs(sheet_id, generated_at DESC);
 -- OAuth refresh token above. Session cookie value -> user, with an
 -- expiry so stale sessions get swept.
 CREATE TABLE IF NOT EXISTS sessions (
-    token       TEXT PRIMARY KEY,  -- random session token, set as an HttpOnly cookie
+    -- SHA-256 (hex) of the random session token; the raw token only ever
+    -- lives in the user's HttpOnly cookie.
+    token       TEXT PRIMARY KEY,
     user_id     INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     created_at  TEXT NOT NULL DEFAULT (datetime('now')),
     expires_at  TEXT NOT NULL
 );
 
 CREATE INDEX IF NOT EXISTS idx_sessions_expiry ON sessions(expires_at);
+
+-- BrickLink catalog lookups by LEGO element ID (see src/bricklink.h), shared
+-- across users and sheets — catalog data isn't user-specific. A row with
+-- NULL weight is a miss (unknown element, or no catalog weight), retried
+-- after a week.
+CREATE TABLE IF NOT EXISTS bricklink_parts (
+    element_id  TEXT PRIMARY KEY,
+    part_no     TEXT NOT NULL DEFAULT '',
+    color       TEXT NOT NULL DEFAULT '',
+    weight      REAL,
+    fetched_at  INTEGER NOT NULL  -- unix time
+);

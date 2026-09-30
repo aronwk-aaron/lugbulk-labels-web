@@ -16,16 +16,23 @@
   input[type=text] { flex: 1; padding: 0.4rem 0.6rem; }
   button { padding: 0.4rem 0.8rem; cursor: pointer; }
   ul { list-style: none; padding: 0; margin: 0; }
-  li { display: flex; justify-content: space-between; align-items: center;
+  li { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap;
        padding: 0.6rem 0; border-bottom: 1px solid #ddd; gap: 0.5rem; }
   li .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
              max-width: 220px; display: inline-block; }
   li .meta { color: #888; font-size: 0.8rem; }
   li .actions { display: flex; gap: 0.4rem; flex-shrink: 0; align-items: center; }
   .empty { color: #888; font-style: italic; }
-  .error { color: #b00020; }
+  .error, li .meta.error { color: #b00020; }
   form#logout { display: inline; }
-  select.format-select { padding: 0.3rem; }
+  select { padding: 0.3rem; }
+  .options { display: flex; flex-wrap: wrap; gap: 0.75rem; margin-bottom: 0.75rem; font-size: 0.9rem; }
+  .options label { display: flex; gap: 0.3rem; align-items: center; }
+  #label-spec { max-width: 100%; }
+  li .actions { flex-wrap: wrap; }
+  li .issues { flex-basis: 100%; font-size: 0.85rem; margin: 0.25rem 0 0; padding-left: 1.2rem;
+               list-style: disc; }
+  li .issues li { display: list-item; border: 0; padding: 0.1rem 0; }
 </style>
 </head>
 <body>
@@ -41,6 +48,29 @@
 
 <section>
   <h2>Your saved sheets</h2>
+  <div class="options">
+    <label>Label size
+      <select id="label-spec">
+        {{#spec_groups}}<optgroup label="{{label}}">{{#specs}}<option value="{{id}}"{{#selected}} selected{{/selected}}>{{name}}</option>{{/specs}}</optgroup>{{/spec_groups}}
+      </select>
+    </label>
+    <label>Find stock
+      <input type="search" id="label-filter" placeholder="e.g. 8162, 30857, shipping" size="16">
+    </label>
+    <label>Part order
+      <select id="part-order">
+        <option value="heaviest">Heaviest parts first</option>
+        <option value="lightest">Lightest parts first</option>
+        <option value="sheet">Sheet order</option>
+      </select>
+    </label>
+    <label>Reports as
+      <select id="report-format">
+        <option value="pdf">PDF</option>
+        <option value="csv">CSV</option>
+      </select>
+    </label>
+  </div>
   <ul id="saved-list"><li class="empty">Loading&hellip;</li></ul>
 </section>
 
@@ -73,14 +103,49 @@ async function api(path, opts) {
   return res;
 }
 
+// Remembers the option pickers across visits (per browser only).
+for (const id of ['label-spec', 'part-order', 'report-format']) {
+  const select = document.getElementById(id);
+  try {
+    const saved = localStorage.getItem('lugbulk.' + id);
+    if (saved && [...select.options].some(o => o.value === saved)) select.value = saved;
+  } catch (e) { /* storage unavailable: defaults are fine */ }
+  select.addEventListener('change', () => {
+    try { localStorage.setItem('lugbulk.' + id, select.value); } catch (e) {}
+  });
+}
+const opt = (id) => document.getElementById(id).value;
+
+// Narrow the (long) label stock list to options matching the search box:
+// part number, any equivalent, size, or description.
+document.getElementById('label-filter').addEventListener('input', (e) => {
+  const q = e.target.value.trim().toLowerCase();
+  const select = document.getElementById('label-spec');
+  let firstMatch = null;
+  for (const group of select.querySelectorAll('optgroup')) {
+    let any = false;
+    for (const o of group.querySelectorAll('option')) {
+      const hit = !q || o.textContent.toLowerCase().includes(q);
+      o.hidden = !hit;
+      if (hit) { any = true; firstMatch = firstMatch || o; }
+    }
+    group.hidden = !any;
+  }
+  if (q && firstMatch && select.selectedOptions[0].hidden) {
+    select.value = firstMatch.value;
+    select.dispatchEvent(new Event('change'));
+  }
+});
+
 // Triggers a browser download from a POST response — fetch() can't drive
 // navigation directly, so the response body is read as a blob and handed
 // to a throwaway <a download> click, then the object URL is revoked.
 async function downloadFrom(path, filenameFallback) {
   const res = await api(path, { method: 'POST' });
   if (!res.ok) {
+    // Server errors are short plain-text messages meant for the user.
     const text = await res.text().catch(() => '');
-    throw new Error(text || ('request failed: ' + res.status));
+    throw new Error(text || ('Request failed (' + res.status + ') — try again.'));
   }
   const blob = await res.blob();
   const disposition = res.headers.get('Content-Disposition') || '';
@@ -112,55 +177,101 @@ async function loadSavedSheets() {
 
       const statusSpan = el('span', { class: 'meta' });
 
-      const labelsBtn = el('button', { type: 'button', text: 'Labels PDF' });
-      labelsBtn.addEventListener('click', async () => {
-        labelsBtn.disabled = true;
-        statusSpan.textContent = 'Generating labels…';
+      const base = '/sheets/' + encodeURIComponent(sheet.row_id);
+      const issuesList = el('ul', { class: 'issues' });
+      const historySpan = el('span', { class: 'meta history' });
+
+      // "Last run" line, from the server's run log.
+      const REPORT_NAMES = { labels: 'Labels', lot_counts: 'Lot counts', parts: 'Parts list' };
+      const refreshHistory = async () => {
         try {
-          await downloadFrom('/sheets/' + encodeURIComponent(sheet.row_id) + '/labels', sheet.display_name + ' labels.pdf');
-          statusSpan.textContent = '';
+          const res = await api(base + '/history');
+          if (!res.ok) return;
+          const run = (await res.json()).runs[0];
+          historySpan.textContent = run
+            ? 'Last run: ' + (REPORT_NAMES[run.report_type] || run.report_type) + ', ' +
+              new Date(run.generated_at.replace(' ', 'T') + 'Z').toLocaleString() +
+              (run.status === 'ok' ? ' (' + run.item_count + ')' : ' — failed')
+            : '';
+        } catch (e) { /* history is a nicety; ignore */ }
+      };
+      refreshHistory();
+
+      // One button per download; the query string carries the pickers.
+      const downloadButton = (label, busyText, pathFn, fallbackFn) => {
+        const btn = el('button', { type: 'button', text: label });
+        btn.addEventListener('click', async () => {
+          btn.disabled = true;
+          statusSpan.classList.remove('error');
+          statusSpan.textContent = busyText;
+          try {
+            await downloadFrom(pathFn(), fallbackFn());
+            statusSpan.textContent = '';
+          } catch (e) {
+            statusSpan.classList.add('error');
+            statusSpan.textContent = e.message;
+          }
+          btn.disabled = false;
+          refreshHistory();
+        });
+        return btn;
+      };
+
+      const checkBtn = el('button', { type: 'button', text: 'Check sheet' });
+      checkBtn.addEventListener('click', async () => {
+        checkBtn.disabled = true;
+        statusSpan.classList.remove('error');
+        statusSpan.textContent = 'Checking…';
+        issuesList.textContent = '';
+        try {
+          const res = await api(base + '/check');
+          if (!res.ok) throw new Error(await res.text());
+          const data = await res.json();
+          statusSpan.textContent = data.labels + ' labels, ' +
+            (data.issues.length ? data.issues.length + ' issue(s):' : 'no issues found.');
+          for (const issue of data.issues) {
+            issuesList.appendChild(el('li', { text: 'Row ' + issue.row + ': ' + issue.detail }));
+          }
         } catch (e) {
-          statusSpan.textContent = 'Labels failed — try again.';
+          statusSpan.classList.add('error');
+          statusSpan.textContent = e.message || 'Check failed — try again.';
         }
-        labelsBtn.disabled = false;
+        checkBtn.disabled = false;
       });
 
-      const formatSelect = el('select', { class: 'format-select' });
-      formatSelect.appendChild(el('option', { value: 'csv', text: 'CSV' }));
-      formatSelect.appendChild(el('option', { value: 'pdf', text: 'PDF' }));
-
-      const lotsBtn = el('button', { type: 'button', text: 'Lot Counts' });
-      lotsBtn.addEventListener('click', async () => {
-        lotsBtn.disabled = true;
-        statusSpan.textContent = 'Generating lot counts…';
-        const format = formatSelect.value;
-        try {
-          await downloadFrom(
-            '/sheets/' + encodeURIComponent(sheet.row_id) + '/lots?format=' + encodeURIComponent(format),
-            sheet.display_name + ' lot counts.' + format
-          );
-          statusSpan.textContent = '';
-        } catch (e) {
-          statusSpan.textContent = 'Lot counts failed — try again.';
-        }
-        lotsBtn.disabled = false;
-      });
+      const labelsBtn = downloadButton('Labels', 'Generating labels… (can take a minute)',
+        () => base + '/labels?spec=' + encodeURIComponent(opt('label-spec')) +
+              '&order=' + encodeURIComponent(opt('part-order')),
+        () => sheet.display_name + ' labels.pdf');
+      const partsBtn = downloadButton('Parts list', 'Generating parts list…',
+        () => base + '/parts?format=' + encodeURIComponent(opt('report-format')) +
+              '&order=' + encodeURIComponent(opt('part-order')),
+        () => sheet.display_name + ' parts.' + opt('report-format'));
+      const lotsBtn = downloadButton('Lot counts', 'Generating lot counts…',
+        () => base + '/lots?format=' + encodeURIComponent(opt('report-format')),
+        () => sheet.display_name + ' lot counts.' + opt('report-format'));
 
       const delBtn = el('button', { type: 'button', text: 'Remove' });
       delBtn.addEventListener('click', async () => {
         delBtn.disabled = true;
         try {
-          await api('/sheets/' + encodeURIComponent(sheet.row_id), { method: 'DELETE' });
+          if (!confirm('Remove "' + sheet.display_name + '" from your list? (The Google Sheet itself is not touched.)')) {
+            delBtn.disabled = false;
+            return;
+          }
+          await api(base, { method: 'DELETE' });
           loadSavedSheets();
         } catch (e) {
           delBtn.disabled = false;
         }
       });
 
-      const actions = el('span', { class: 'actions' }, [labelsBtn, formatSelect, lotsBtn, delBtn]);
+      const actions = el('span', { class: 'actions' }, [checkBtn, labelsBtn, partsBtn, lotsBtn, delBtn]);
       list.appendChild(el('li', {}, [
-        el('span', {}, [nameSpan, document.createElement('br'), statusSpan]),
-        actions
+        el('span', {}, [nameSpan, document.createElement('br'), statusSpan,
+                        document.createElement('br'), historySpan]),
+        actions,
+        issuesList
       ]));
     }
   } catch (e) {
@@ -192,7 +303,7 @@ async function runSearch() {
           await api('/sheets', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ sheet_id: file.id, display_name: file.name })
+            body: JSON.stringify({ sheet_id: file.id, display_name: file.name.slice(0, 200) })
           });
           addBtn.textContent = 'Added';
           loadSavedSheets();

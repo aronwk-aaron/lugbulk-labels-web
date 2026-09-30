@@ -4,6 +4,7 @@
 #pragma once
 
 #include <cstdint>
+#include <map>
 #include <optional>
 #include <string>
 #include <vector>
@@ -19,7 +20,7 @@ struct User {
 };
 
 struct Session {
-    std::string token;
+    std::string token;  // raw token for the cookie; the DB stores only its hash
     int64_t user_id;
     std::string expires_at;  // ISO8601 UTC, "YYYY-MM-DD HH:MM:SS"
 };
@@ -29,6 +30,24 @@ struct Sheet {
     int64_t user_id;
     std::string sheet_id;      // Google Sheets/Drive file id
     std::string display_name;
+};
+
+// One row of the run history log.
+struct Run {
+    std::string report_type;  // "labels" | "lot_counts" | "parts"
+    std::string generated_at;  // "YYYY-MM-DD HH:MM:SS", UTC
+    int item_count;
+    std::string status;  // "ok" | "error"
+    std::string error_message;
+};
+
+// A cached BrickLink catalog lookup (see src/bricklink.h).
+struct BrickLinkPart {
+    std::string element_id;
+    std::string part_no;  // empty if BrickLink doesn't know the element
+    std::string color;
+    std::optional<double> weight;
+    int64_t fetched_at;  // unix time
 };
 
 // Mirrors the `sheets` row's owner check needed before generating against it.
@@ -91,7 +110,17 @@ public:
     void log_run(int64_t sheet_row_id, const std::string& report_type, int item_count,
                  const std::string& status, const std::string* error_message);
 
+    // Most recent runs for a sheet, newest first. Callers must have done
+    // the find_owned_sheet ownership check.
+    std::vector<Run> list_runs(int64_t sheet_row_id, int limit);
+
+    // BrickLink lookup cache.
+    std::map<std::string, BrickLinkPart> get_bricklink_parts(const std::vector<std::string>& element_ids);
+    void put_bricklink_part(const BrickLinkPart& part);
+
 private:
+    void migrate();
+
     sqlite3* db_ = nullptr;
 };
 

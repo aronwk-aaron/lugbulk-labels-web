@@ -19,6 +19,10 @@ std::vector<uint8_t> random_bytes(size_t n);
 // result is URL- and cookie-safe without extra escaping.
 std::string random_hex_token(size_t n_bytes = 32);
 
+// Lowercase hex SHA-256 of `data`. Session tokens are stored hashed, so a
+// leaked database can't be replayed as live sessions.
+std::string sha256_hex(const std::string& data);
+
 std::string base64_encode(const std::vector<uint8_t>& data);
 std::vector<uint8_t> base64_decode(const std::string& b64);
 
