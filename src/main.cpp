@@ -3,6 +3,7 @@
 // Routes so far:
 //   GET    /                    dashboard HTML, mustache-rendered (redirects to /auth/login if not logged in)
 //   GET    /healthz             liveness check
+//   GET    /privacy, /terms     privacy policy and terms of service (static)
 //   GET    /version             build version (release, canary-<sha>, or dev)
 //   GET    /auth/login          kick off Google OAuth
 //   GET    /auth/callback       OAuth redirect target, stores refresh token
@@ -766,6 +767,16 @@ int main() {
     // to Warning so that never lands in logs/log aggregators.
     app.loglevel(crow::LogLevel::Warning);
     crow::mustache::set_global_base("templates");
+
+    // Privacy policy and terms (linked from Google's consent screen).
+    // Static pages: no scripts, so the default CSP applies.
+    auto static_page = [](const std::string& file) {
+        crow::response res(200, crow::mustache::load_text(file));
+        res.set_header("Content-Type", "text/html; charset=utf-8");
+        return res;
+    };
+    CROW_ROUTE(app, "/privacy")([static_page]() { return static_page("privacy.html"); });
+    CROW_ROUTE(app, "/terms")([static_page]() { return static_page("terms.html"); });
 
     CROW_ROUTE(app, "/healthz")([]() {
         return crow::response(200, "ok");
