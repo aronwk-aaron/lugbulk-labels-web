@@ -330,3 +330,20 @@ or with the compose file: `LUGBULK_TAG=canary docker compose pull && docker comp
 | `.github/workflows/docker-publish.yml` | CI: builds, tests, publishes the image to GHCR, and creates canary/versioned GitHub releases |
 | `docker-compose.yml` | Local dev convenience — build + run with a persistent volume |
 | `.env.example` | Template for OAuth client credentials and the token-encryption key |
+
+## License
+
+Copyright (C) 2026 Aaron Kimbrell.
+
+This program is free software: you can redistribute it and/or modify it under
+the terms of the GNU Affero General Public License as published by the Free
+Software Foundation, version 3 or (at your option) any later version. It is
+distributed WITHOUT ANY WARRANTY; see [LICENSE](LICENSE) for the full terms.
+
+Because it's the AGPL, anyone running a modified copy as a web service must
+offer its users that version's source code — the dashboard and the terms page
+link to it.
+
+Bundled or fetched components keep their own licenses: Crow (BSD-3-Clause),
+PoDoFo (LGPL-2.0), Nayuki's QR Code generator (MIT), and the gLabels label
+template database behind `data/label_specs.json` (MIT).
