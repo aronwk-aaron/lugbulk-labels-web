@@ -1,5 +1,9 @@
 services:
   web:
+    # `docker compose pull && docker compose up -d` runs the published image
+    # (LUGBULK_TAG: latest = newest release, canary = head of master, or a
+    # version like 1.2.0); `docker compose up --build` builds this checkout.
+    image: ghcr.io/aronwk-aaron/lugbulk-labels-web:${LUGBULK_TAG:-latest}
     build: .
     ports:
       - "8080:8080"

@@ -167,34 +167,46 @@ the Docker build:
 ctest --test-dir build --output-on-failure
 ```
 
-## Container image
+## Container image and releases
 
-Every push to `master` and every `v*` tag builds and publishes to GitHub
-Container Registry via `.github/workflows/docker-publish.yml` — no Docker
-Hub account or registry secrets needed, it authenticates with the repo's
-built-in `GITHUB_TOKEN`. Pull requests build (to catch a broken Dockerfile)
-but never push.
+`.github/workflows/docker-publish.yml` builds, tests and publishes the
+image to GitHub Container Registry with the repo's built-in
+`GITHUB_TOKEN` (no registry secrets):
+
+| Event | Image tags | GitHub release |
+|---|---|---|
+| Pull request | — (build + tests + smoke test only) | — |
+| Push to `master` | `canary`, short SHA | Rolling **canary** pre-release, always the head of `master`, with the changes since the last release |
+| Push a `vX.Y.Z` tag | `X.Y.Z`, `X.Y`, `X`, `latest` | Release `vX.Y.Z` with generated notes |
+| Push a `vX.Y.Z-rc.N` tag | `X.Y.Z-rc.N` | Pre-release |
+
+`latest` only ever moves on a release. Every release attaches
+`docker-compose.yml` and `.env.example`. The running build's version is
+shown in the dashboard header and at `/version` (`1.2.0`,
+`canary-<sha>`, or `dev` for local builds).
+
+To cut a release:
 
 ```
-docker pull ghcr.io/aronwk-aaron/lugbulk-labels-web:latest
+git tag v1.2.0 && git push origin v1.2.0
 ```
 
-Tags: `latest` and the short commit SHA on every `master` push; `X.Y.Z`,
-`X.Y`, and `X` on a `vX.Y.Z` tag push. Before anything is pushed, CI runs
-the unit tests (inside the image build), boots the image, and checks
-`/healthz`, the login redirect, and that it runs as the unprivileged
-`lugbulk` user.
+Before anything is pushed, CI runs the unit tests (inside the image
+build), boots the image, and checks `/healthz`, `/version`, the login
+redirect, and that it runs as the unprivileged `lugbulk` user.
 
 The container starts as root only long enough to hand `/data` to
 `lugbulk` (so volumes from older, root-run images keep working), then drops
 privileges. It has a Docker `HEALTHCHECK` on `/healthz`.
 
-To run the published image:
+To run a published image:
 
 ```
 docker run -d --name lugbulk -p 8080:8080 -v lugbulk-data:/data --env-file .env \
-    ghcr.io/aronwk-aaron/lugbulk-labels-web:latest
+    ghcr.io/aronwk-aaron/lugbulk-labels-web:latest    # or :canary, or :1.2.0
 ```
+
+or with the compose file: `LUGBULK_TAG=canary docker compose pull && docker compose up -d`.
 
 ## Project files
 
@@ -221,6 +233,6 @@ docker run -d --name lugbulk -p 8080:8080 -v lugbulk-data:/data --env-file .env 
 | `templates/dashboard.html` | Mustache template for the logged-in dashboard page (Crow's bundled `crow::mustache`) |
 | `Dockerfile` | Multi-stage build (Debian bookworm base); tests run during the build |
 | `docker/entrypoint.sh` | Fixes `/data` ownership, then drops to the `lugbulk` user |
-| `.github/workflows/docker-publish.yml` | CI: builds and publishes the image to GHCR |
+| `.github/workflows/docker-publish.yml` | CI: builds, tests, publishes the image to GHCR, and creates canary/versioned GitHub releases |
 | `docker-compose.yml` | Local dev convenience — build + run with a persistent volume |
 | `.env.example` | Template for OAuth client credentials and the token-encryption key |

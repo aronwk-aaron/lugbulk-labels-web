@@ -1,18 +1,28 @@
-name: Build and publish Docker image
+name: Build, publish and release
 
-# Publishes to GHCR using the repo's built-in GITHUB_TOKEN — no registry
-# secrets to create or rotate. Runs on every push to master (tagged
-# `latest` + the commit SHA) and on version tags `v*` (tagged with the
-# version, e.g. v1.2.0 -> 1.2.0, 1.2, 1, latest). Pull requests only build,
-# never push, so a PR from a fork can't publish an image under this repo's
-# name. Every run also boots the built image and checks it serves before
-# anything is pushed.
+# One pipeline for every build of the image:
+#   - pull request:        build + test + smoke test only, nothing published
+#   - push to master:      canary — image tags `canary` and the short SHA, and
+#                          the rolling "canary" GitHub pre-release moved to
+#                          the new head of master
+#   - push of a `v*` tag:  release — image tags X.Y.Z, X.Y, X and `latest`,
+#                          and a GitHub release with generated notes
+#                          (pre-release if the tag has a suffix, e.g. v1.2.0-rc.1)
+# Publishes to GHCR with the repo's built-in GITHUB_TOKEN — no secrets to
+# manage. Every build boots the image and checks it serves before anything
+# is pushed.
 on:
   push:
     branches: [master]
     tags: ["v*"]
   pull_request:
     branches: [master]
+
+# Canary builds queue rather than race, so the `canary` tag and release
+# always end up on the newest commit.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   REGISTRY: ghcr.io
@@ -24,10 +34,23 @@ jobs:
     permissions:
       contents: read
       packages: write
+    outputs:
+      version: ${{ steps.version.outputs.version }}
 
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
+
+      - name: Work out the version
+        id: version
+        run: |
+          case "$GITHUB_REF" in
+            refs/tags/v*) version="${GITHUB_REF_NAME#v}" ;;
+            refs/heads/master) version="canary-${GITHUB_SHA::7}" ;;
+            *) version="pr-${GITHUB_SHA::7}" ;;
+          esac
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "Building version $version"
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -45,12 +68,15 @@ jobs:
         uses: docker/metadata-action@v5
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          # `latest` follows releases only; `canary` is always the head of master.
+          flavor: latest=false
           tags: |
-            type=raw,value=latest,enable={{is_default_branch}}
+            type=raw,value=canary,enable={{is_default_branch}}
             type=sha,prefix=,format=short,enable={{is_default_branch}}
             type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=semver,pattern={{major}}
+            type=semver,pattern={{major}}.{{minor}},enable=${{ !contains(github.ref_name, '-') }}
+            type=semver,pattern={{major}},enable=${{ !contains(github.ref_name, '-') }}
+            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') && !contains(github.ref_name, '-') }}
 
       # Build once into the local daemon (unit tests run inside the build),
       # then boot it and check it actually serves before publishing anything.
@@ -60,10 +86,13 @@ jobs:
           context: .
           load: true
           tags: lugbulk-labels-web:ci
+          build-args: VERSION=${{ steps.version.outputs.version }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
       - name: Smoke test the container
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
         run: |
           docker run -d --name smoke -p 8080:8080 \
             -e GOOGLE_OAUTH_CLIENT_ID=ci -e GOOGLE_OAUTH_CLIENT_SECRET=ci \
@@ -74,6 +103,8 @@ jobs:
             sleep 1
           done
           curl -fsS http://localhost:8080/healthz
+          # Reports the version it was built as.
+          test "$(curl -fsS http://localhost:8080/version)" = "$VERSION"
           # Logged-out dashboard must redirect to Google login.
           test "$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8080/)" = 302
           # Runs as the unprivileged user, not root.
@@ -96,4 +127,64 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          build-args: VERSION=${{ steps.version.outputs.version }}
           cache-from: type=gha
+
+  github-release:
+    needs: build-and-publish
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      VERSION: ${{ needs.build-and-publish.outputs.version }}
+      IMAGE: ghcr.io/${{ github.repository }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Release notes header
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then tag="$VERSION"; else tag=canary; fi
+          cat > header.md <<EOF
+          ## Container image
+
+          \`\`\`
+          docker pull $IMAGE:$tag
+          \`\`\`
+
+          Deploy with the attached \`docker-compose.yml\` and \`.env.example\`
+          (see the README's OAuth setup). The dashboard header and \`/version\`
+          show \`$VERSION\`.
+          EOF
+
+      - name: Release (v* tag)
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          prerelease=""
+          [[ "$GITHUB_REF_NAME" == *-* ]] && prerelease="--prerelease"
+          gh release create "$GITHUB_REF_NAME" --verify-tag --generate-notes $prerelease \
+            --title "$GITHUB_REF_NAME" --notes-file header.md \
+            docker-compose.yml .env.example
+
+      - name: Canary (head of master)
+        if: github.ref == 'refs/heads/master'
+        run: |
+          last_release="$(git describe --tags --abbrev=0 --match 'v*' 2>/dev/null || true)"
+          {
+            echo "Rolling pre-release: always the head of \`master\` ($GITHUB_SHA)."
+            echo "Not a stable release — use the latest \`v*\` release for that."
+            echo
+            cat header.md
+            echo
+            echo "## Changes since ${last_release:-the first commit}"
+            echo
+            git log --pretty='- %s (%h)' ${last_release:+$last_release..}HEAD | head -50
+          } > notes.md
+          gh release delete canary --yes --cleanup-tag 2>/dev/null || true
+          gh release create canary --target "$GITHUB_SHA" --prerelease \
+            --title "Canary ($VERSION)" --notes-file notes.md \
+            docker-compose.yml .env.example
