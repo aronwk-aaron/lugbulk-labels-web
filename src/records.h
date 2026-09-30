@@ -45,4 +45,8 @@ void apply_bricklink(PivotResult& pivot, const bricklink::Catalog& catalog);
 // {"labels":N,"people":N,"parts":N,"issues":[{"row":N,"kind":"...","detail":"..."}]}.
 std::string check_summary_json(const PivotResult& pivot);
 
+// The "sheet check.txt" in the "Download all" zip: "<N> labels", then
+// "Row R (kind): detail" per issue, or "No issues found.".
+std::string check_text(const PivotResult& pivot);
+
 }  // namespace lugbulk::records

@@ -74,4 +74,13 @@ std::string check_summary_json(const PivotResult& pivot) {
     return body.dump();
 }
 
+std::string check_text(const PivotResult& pivot) {
+    std::string check = std::to_string(pivot.records.size()) + " labels\n";
+    if (pivot.issues.empty()) check += "No issues found.\n";
+    for (const auto& i : pivot.issues) {
+        check += "Row " + std::to_string(i.row) + " (" + i.kind + "): " + i.detail + "\n";
+    }
+    return check;
+}
+
 }  // namespace lugbulk::records

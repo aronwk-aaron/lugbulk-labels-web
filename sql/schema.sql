@@ -66,6 +66,10 @@ CREATE TABLE IF NOT EXISTS sheet_designs (
     label_spec      TEXT NOT NULL,
     part_order      TEXT NOT NULL,
     hidden_parts    TEXT NOT NULL,  -- comma-separated LabelPart names
-    updated_by      INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    -- Packing checklist / parts list / lot counts settings and the zip's
+    -- file choices: a JSON object (at most 4 KB) stored as the browser sent
+    -- it, NULL if never saved. Db::migrate() adds it to older databases.
+    report_options  TEXT,
+    updated_by     INTEGER REFERENCES users(id) ON DELETE SET NULL,
     updated_at      TEXT NOT NULL DEFAULT (datetime('now'))
 );

@@ -156,6 +156,22 @@ void Db::migrate() {
             }
         }
     }
+    // sheet_designs.report_options (added with the browser-side reports).
+    {
+        bool has_options = false;
+        Stmt s(db_, "SELECT name FROM pragma_table_info('sheet_designs');");
+        while (s.step()) has_options |= s.column_text(0) == "report_options";
+        if (!has_options) {
+            char* errmsg = nullptr;
+            if (sqlite3_exec(db_, "ALTER TABLE sheet_designs ADD COLUMN report_options TEXT;",
+                             nullptr, nullptr, &errmsg) != SQLITE_OK) {
+                std::string msg = std::string("db error: sheet_designs migration failed: ") +
+                                  (errmsg ? errmsg : "unknown");
+                sqlite3_free(errmsg);
+                throw std::runtime_error(msg);
+            }
+        }
+    }
     std::string runs_sql;
     {
         Stmt s(db_, "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'runs';");
@@ -393,25 +409,32 @@ void Db::mark_sheet_verified(int64_t sheet_row_id) {
 
 std::optional<Design> Db::get_design(const std::string& google_sheet_id) {
     Stmt s(db_,
-           "SELECT label_spec, part_order, hidden_parts FROM sheet_designs "
-           "WHERE google_sheet_id = ?;");
+           "SELECT label_spec, part_order, hidden_parts, COALESCE(report_options, '') "
+           "FROM sheet_designs WHERE google_sheet_id = ?;");
     s.bind_text(1, google_sheet_id);
     if (!s.step()) return std::nullopt;
-    return Design{s.column_text(0), s.column_text(1), s.column_text(2)};
+    return Design{s.column_text(0), s.column_text(1), s.column_text(2), s.column_text(3)};
 }
 
 void Db::put_design(const std::string& google_sheet_id, const Design& design, int64_t user_id) {
     Stmt s(db_,
            "INSERT INTO sheet_designs (google_sheet_id, label_spec, part_order, hidden_parts, "
-           "  updated_by, updated_at) VALUES (?, ?, ?, ?, ?, datetime('now')) "
+           "  updated_by, updated_at, report_options) "
+           "VALUES (?, ?, ?, ?, ?, datetime('now'), ?) "
            "ON CONFLICT(google_sheet_id) DO UPDATE SET label_spec = excluded.label_spec, "
            "  part_order = excluded.part_order, hidden_parts = excluded.hidden_parts, "
-           "  updated_by = excluded.updated_by, updated_at = excluded.updated_at;");
+           "  updated_by = excluded.updated_by, updated_at = excluded.updated_at, "
+           "  report_options = COALESCE(excluded.report_options, sheet_designs.report_options);");
     s.bind_text(1, google_sheet_id);
     s.bind_text(2, design.label_spec);
     s.bind_text(3, design.part_order);
     s.bind_text(4, design.hidden_parts);
     s.bind_int64(5, user_id);
+    if (design.report_options) {
+        s.bind_text(6, *design.report_options);
+    } else {
+        s.bind_null(6);
+    }
     s.step();
 }
 

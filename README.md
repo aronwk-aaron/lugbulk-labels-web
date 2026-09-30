@@ -52,19 +52,31 @@ can still open sheets already in their list.
   Labels, Checklist and Parts list downloads follow it. An **alignment
   test page** prints the stock's outlines on plain paper to check the
   printer first.
-- **Download all** — one `.zip` with the labels, packing checklist, parts
-  list and lot counts (PDF and CSV) and the sheet check, for a saved sheet
-  or an upload.
-- **Packing checklist** (PDF) — one page per person listing their parts
-  with a tick box per bag.
+- **Download selected** — one `.zip` with the files you tick: labels,
+  packing checklist, parts list and lot counts (PDF and CSV) and the sheet
+  check, for a saved sheet or an upload. The reports and the zip are made
+  in the browser (only the labels PDF comes from the server).
+- **Report tabs** — Labels · Packing checklist · Parts list · Lot counts,
+  each with its own settings and a live preview made in the browser. Every
+  report can have its own title and subtitle line, US Letter or A4,
+  portrait or landscape. Report settings and the zip's file choices are
+  saved with the sheet, like the label design (for uploads: in the
+  browser).
+- **Packing checklist** (PDF) — one page per person (or one after another)
+  listing their parts with a tick box per bag; sort people by first or last
+  name, choose the part order, show colors, weight and part photos, and add
+  a "Packed by / date" line.
 - **Label stock** — pick from 51 Avery (US-Letter and A4) and Dymo
   LabelWriter stocks, searchable by any part number on the box (e.g.
   8162, L7163, 30857); default Avery 5162. The inventory is
   `data/label_specs.json`, generated from the gLabels template database by
   the CLI's `tools/update_label_specs.py`.
-- **Parts list** (PDF/CSV) — one row per part in label order: total
-  pieces, number of people ordering it, weight.
-- **Lot counts** (PDF/CSV) — per person: number of labels and pieces.
+- **Parts list** (PDF/CSV) — one row per part in label order (or
+  heaviest/lightest first, sheet order, element ID): total pieces, number
+  of people ordering it, weight; optional photo and total weight columns,
+  grouped by color if you like.
+- **Lot counts** (PDF/CSV) — per person: number of labels and pieces;
+  optional total weight, a totals row and a minimum number of lots.
 - **Check sheet** — label count and any data issues (non-numeric
   quantities, duplicates, bad element IDs, colors with no LEGO/BrickLink
   match, missing descriptions) without generating anything.
@@ -318,12 +330,14 @@ or with the compose file: `LUGBULK_TAG=canary docker compose pull && docker comp
 | `src/labels_pdf.{h,cpp}` | Label PDF rendering and the shared part-photo cache |
 | `src/image_backdrop.{h,cpp}` | Gray-tile treatment for trans/white part photos |
 | `src/bricklink.{h,cpp}` | Reads BrickLink's catalog download files: weights and colors |
-| `src/reports.{h,cpp}` | Lot counts and parts list, CSV + PDF |
-| `src/zip_writer.{h,cpp}` | Builds the "Download all" `.zip` in memory |
+| `src/reports.{h,cpp}` | Lot counts and parts list, CSV + PDF (server routes; the dashboard now uses `static/js/reports.js`) |
+| `src/zip_writer.{h,cpp}` | Builds the server's "Download all" `.zip` in memory |
+| `src/json_check.{h,cpp}` | Strict JSON check for the report options saved with a sheet's design |
 | `src/spreadsheet.{h,cpp}` | Reads uploaded `.xlsx` (bounded unzip + SpreadsheetML) and `.csv` |
 | `src/pdf_text.{h,cpp}` | UTF-8 → WinAnsi for PDF text |
 | `src/records.{h,cpp}` | Row cap, per-run size limits, BrickLink data on records, the "Check sheet" JSON |
-| `static/js/` | Browser ports of the pure data logic (plain ES modules, served at `/static/js/<name>.js`): `pivot.js`, `ordering.js`, `colors.js`, `layout.js`, `records.js` |
+| `static/js/` | Browser ports of the pure data logic (plain ES modules, served at `/static/js/<name>.js`): `pivot.js`, `ordering.js`, `colors.js`, `layout.js`, `records.js`, `spreadsheet.js`, `load.js`, and the reports (`reports.js`, `report_options.js`, `printf.js`) and zip writer (`zip.js`) |
+| `static/js/vendor/` | Third-party browser modules, pinned and unmodified: `pdf-lib.js` (see its README) |
 | `tests/tests.cpp` | Unit tests (`ctest`) |
 | `tests/golden.cpp` | `lugbulk_golden <dir>`: writes what the C++ makes of each fixture, for the JS parity test |
 | `tests/js/` | `node --test` tests for `static/js/`; `GOLDEN_DIR=<dir>` checks it matches the C++ (CI does this) |
