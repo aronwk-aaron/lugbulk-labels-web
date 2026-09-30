@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <cstring>
 #include <map>
 #include <sstream>
@@ -118,9 +119,15 @@ std::string lot_counts_csv(const std::vector<LabelRecord>& records, SortBy sort_
     return out.str();
 }
 
-std::vector<uint8_t> lot_counts_pdf(const std::vector<LabelRecord>& records, SortBy sort_by) {
-    std::vector<PersonTotals> totals = lot_counts_by_person(records, sort_by);
+namespace {
 
+// A simple paginated table PDF: title, subtitle, then a header row and
+// zebra-striped body rows, repeated per page. Cell text is shrunk/
+// truncated to fit its column.
+std::vector<uint8_t> table_pdf(const std::string& title, const std::string& subtitle,
+                               const std::vector<std::string>& headers,
+                               const std::vector<double>& col_widths,
+                               const std::vector<std::vector<std::string>>& rows) {
     PoDoFo::PdfRefCountedBuffer buffer;
     PoDoFo::PdfOutputDevice device(&buffer);
     PoDoFo::PdfStreamedDocument doc(&device);
@@ -134,21 +141,42 @@ std::vector<uint8_t> lot_counts_pdf(const std::vector<LabelRecord>& records, Sor
         throw std::runtime_error("pdf error: could not load base fonts");
     }
 
+    double table_w = 0;
+    for (double w : col_widths) table_w += w;
+
+    // Truncates `text` (UTF-8) with "..." to fit `max_w` at 9pt; returns WinAnsi.
+    auto fit = [](PoDoFo::PdfFont* font, const std::string& text, double max_w) {
+        std::string t = pdf_text::to_winansi(text);
+        font->SetFontSize(9.0f);
+        if (font->GetFontMetrics()->StringWidth(t.c_str()) <= max_w) return t;
+        while (!t.empty() && font->GetFontMetrics()->StringWidth((t + "...").c_str()) > max_w) {
+            t.pop_back();
+        }
+        return t + "...";
+    };
+
+    auto draw_row = [&](PoDoFo::PdfPainter& painter, PoDoFo::PdfFont* font, double y,
+                        const std::vector<std::string>& cells) {
+        font->SetFontSize(9.0f);
+        painter.SetFont(font);
+        double x = margin;
+        for (size_t c = 0; c < cells.size() && c < col_widths.size(); ++c) {
+            std::string text = fit(font, cells[c], col_widths[c] - 6);
+            painter.DrawText(x + 3, y - 16 + 8, PoDoFo::PdfString(text.c_str()));
+            x += col_widths[c];
+        }
+    };
+
     const double row_h = 16.0;
     const int header_h_rows = 3;  // title + subtitle + spacer, in row units
-    const int rows_per_page =
-        static_cast<int>((page_h - 2 * margin) / row_h) - header_h_rows - 1 /* table header */;
-    int total_pages = totals.empty() ? 1 : static_cast<int>(std::ceil(
-                                                static_cast<double>(totals.size()) /
-                                                std::max(1, rows_per_page)));
-
-    int total_lots = 0;
-    for (const auto& t : totals) total_lots += t.lot_count;
+    const int rows_per_page = std::max(
+        1, static_cast<int>((page_h - 2 * margin) / row_h) - header_h_rows - 1 /* table header */);
+    int total_pages = rows.empty() ? 1 : static_cast<int>(
+        (rows.size() + rows_per_page - 1) / rows_per_page);
 
     size_t idx = 0;
     for (int page = 0; page < total_pages; ++page) {
-        PoDoFo::PdfPage* pdf_page =
-            doc.CreatePage(PoDoFo::PdfRect(0, 0, page_w, page_h));
+        PoDoFo::PdfPage* pdf_page = doc.CreatePage(PoDoFo::PdfRect(0, 0, page_w, page_h));
         PoDoFo::PdfPainter painter;
         painter.SetPage(pdf_page);
 
@@ -156,50 +184,29 @@ std::vector<uint8_t> lot_counts_pdf(const std::vector<LabelRecord>& records, Sor
 
         font_bold->SetFontSize(14.0f);
         painter.SetFont(font_bold);
-        painter.DrawText(margin, y - 14, PoDoFo::PdfString(pdf_text::to_winansi("Lot counts by person").c_str()));
+        painter.DrawText(margin, y - 14, PoDoFo::PdfString(pdf_text::to_winansi(title).c_str()));
         y -= row_h;
 
         font_regular->SetFontSize(9.0f);
         painter.SetFont(font_regular);
-        std::string sort_label = (sort_by == SortBy::kLastName) ? "last" : "first";
-        std::string subtitle = std::to_string(totals.size()) + " people, " +
-                                std::to_string(total_lots) + " lots total \xe2\x80\x94 sorted by " +
-                                sort_label + " name";
         painter.DrawText(margin, y - 10, PoDoFo::PdfString(pdf_text::to_winansi(subtitle).c_str()));
         y -= row_h * 2;
 
-        // Table header
-        const double col_person_w = 280, col_lots_w = 100, col_pieces_w = 120;
-        double x0 = margin;
         painter.SetColor(0.85, 0.85, 0.85);
-        painter.Rectangle(x0, y - row_h + 4, col_person_w + col_lots_w + col_pieces_w, row_h);
+        painter.Rectangle(margin, y - row_h + 4, table_w, row_h);
         painter.Fill();
         painter.SetColor(0, 0, 0);
-        font_bold->SetFontSize(9.0f);
-        painter.SetFont(font_bold);
-        painter.DrawText(x0 + 3, y - row_h + 8, PoDoFo::PdfString("Person"));
-        painter.DrawText(x0 + col_person_w + 3, y - row_h + 8, PoDoFo::PdfString("Lots"));
-        painter.DrawText(x0 + col_person_w + col_lots_w + 3, y - row_h + 8,
-                          PoDoFo::PdfString("Total pieces"));
+        draw_row(painter, font_bold, y, headers);
         y -= row_h;
 
-        font_regular->SetFontSize(9.0f);
-        painter.SetFont(font_regular);
-        for (int r = 0; r < rows_per_page && idx < totals.size(); ++r, ++idx) {
-            const PersonTotals& t = totals[idx];
+        for (int r = 0; r < rows_per_page && idx < rows.size(); ++r, ++idx) {
             if (r % 2 == 1) {
                 painter.SetColor(0.96, 0.96, 0.96);
-                painter.Rectangle(x0, y - row_h + 4, col_person_w + col_lots_w + col_pieces_w,
-                                   row_h);
+                painter.Rectangle(margin, y - row_h + 4, table_w, row_h);
                 painter.Fill();
                 painter.SetColor(0, 0, 0);
             }
-            painter.DrawText(x0 + 3, y - row_h + 8,
-                              PoDoFo::PdfString(pdf_text::to_winansi(t.person).c_str()));
-            painter.DrawText(x0 + col_person_w + 3, y - row_h + 8,
-                              PoDoFo::PdfString(std::to_string(t.lot_count)));
-            painter.DrawText(x0 + col_person_w + col_lots_w + 3, y - row_h + 8,
-                              PoDoFo::PdfString(format_g(t.total_pieces)));
+            draw_row(painter, font_regular, y, rows[idx]);
             y -= row_h;
         }
 
@@ -211,6 +218,81 @@ std::vector<uint8_t> lot_counts_pdf(const std::vector<LabelRecord>& records, Sor
     std::vector<uint8_t> out(buffer.GetSize());
     std::memcpy(out.data(), buffer.GetBuffer(), buffer.GetSize());
     return out;
+}
+
+std::string join_colors(const ordering::PartSummary& p) {
+    if (p.lego_color.empty()) return p.bl_color;
+    if (p.bl_color.empty()) return p.lego_color;
+    return p.lego_color + " / " + p.bl_color;
+}
+
+}  // namespace
+
+std::vector<uint8_t> lot_counts_pdf(const std::vector<LabelRecord>& records, SortBy sort_by) {
+    std::vector<PersonTotals> totals = lot_counts_by_person(records, sort_by);
+    int total_lots = 0;
+    std::vector<std::vector<std::string>> rows;
+    for (const auto& t : totals) {
+        total_lots += t.lot_count;
+        rows.push_back({t.person, std::to_string(t.lot_count), format_g(t.total_pieces)});
+    }
+    std::string sort_label = (sort_by == SortBy::kLastName) ? "last" : "first";
+    std::string subtitle = std::to_string(totals.size()) + " people, " +
+                           std::to_string(total_lots) + " lots total \xe2\x80\x94 sorted by " +
+                           sort_label + " name";
+    return table_pdf("Lot counts by person", subtitle, {"Person", "Lots", "Total pieces"},
+                     {280, 100, 120}, rows);
+}
+
+std::string weight_text(const ordering::PartSummary& part) {
+    if (!part.weight) return "size unknown";
+    char buf[32];
+    if (*part.weight >= 10) {
+        std::snprintf(buf, sizeof(buf), "%.0f", *part.weight);
+    } else {
+        std::snprintf(buf, sizeof(buf), "%.2g", *part.weight);
+    }
+    return (part.weight_source == "estimate" ? "~" : "") + std::string(buf) + " g/pc";
+}
+
+std::string parts_csv(const std::vector<ordering::PartSummary>& parts) {
+    std::ostringstream out;
+    out << "order,element_id,description,lego_color,bl_color,total_pieces,people,"
+           "grams_per_piece,weight_source\r\n";
+    for (size_t i = 0; i < parts.size(); ++i) {
+        const auto& p = parts[i];
+        std::string grams;
+        if (p.weight) {
+            char buf[32];
+            std::snprintf(buf, sizeof(buf), "%.3g", *p.weight);
+            grams = buf;
+        }
+        out << (i + 1) << "," << csv_field(p.element_id) << "," << csv_field(p.description) << ","
+            << csv_field(p.lego_color) << "," << csv_field(p.bl_color) << ","
+            << format_g(p.pieces) << "," << p.lots << "," << grams << "," << p.weight_source
+            << "\r\n";
+    }
+    return out.str();
+}
+
+std::vector<uint8_t> parts_pdf(const std::vector<ordering::PartSummary>& parts) {
+    double total_pieces = 0;
+    int total_labels = 0;
+    std::vector<std::vector<std::string>> rows;
+    for (size_t i = 0; i < parts.size(); ++i) {
+        const auto& p = parts[i];
+        total_pieces += p.pieces;
+        total_labels += p.lots;
+        rows.push_back({std::to_string(i + 1), p.element_id, p.description, join_colors(p),
+                        format_g(p.pieces), std::to_string(p.lots), weight_text(p)});
+    }
+    std::string subtitle = std::to_string(parts.size()) + " parts, " + format_g(total_pieces) +
+                           " pieces, " + std::to_string(total_labels) +
+                           " labels \xe2\x80\x94 in label order";
+    return table_pdf("Parts list", subtitle,
+                     {"#", "Element", "Description", "LEGO / BrickLink color", "Pieces", "People",
+                      "Weight"},
+                     {24, 50, 150, 150, 45, 40, 70}, rows);
 }
 
 }  // namespace lugbulk::reports

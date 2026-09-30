@@ -5,7 +5,8 @@ name: Build and publish Docker image
 # `latest` + the commit SHA) and on version tags `v*` (tagged with the
 # version, e.g. v1.2.0 -> 1.2.0, 1.2, 1, latest). Pull requests only build,
 # never push, so a PR from a fork can't publish an image under this repo's
-# name.
+# name. Every run also boots the built image and checks it serves before
+# anything is pushed.
 on:
   push:
     branches: [master]
@@ -51,12 +52,40 @@ jobs:
             type=semver,pattern={{major}}.{{minor}}
             type=semver,pattern={{major}}
 
-      - name: Build and push
+      # Build once into the local daemon (unit tests run inside the build),
+      # then boot it and check it actually serves before publishing anything.
+      - name: Build
         uses: docker/build-push-action@v6
         with:
           context: .
-          push: ${{ github.event_name != 'pull_request' }}
+          load: true
+          tags: lugbulk-labels-web:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Smoke test the container
+        run: |
+          docker run -d --name smoke -p 8080:8080 \
+            -e GOOGLE_OAUTH_CLIENT_ID=ci -e GOOGLE_OAUTH_CLIENT_SECRET=ci \
+            -e TOKEN_ENCRYPTION_KEY="$(openssl rand -base64 32)" \
+            lugbulk-labels-web:ci
+          for i in $(seq 1 30); do
+            curl -fsS http://localhost:8080/healthz && break
+            sleep 1
+          done
+          curl -fsS http://localhost:8080/healthz
+          # Logged-out dashboard must redirect to Google login.
+          test "$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8080/)" = 302
+          # Runs as the unprivileged user, not root.
+          test "$(docker top smoke -eo user | tail -n +2 | grep -c lugbulk)" -ge 1
+          docker logs smoke
+
+      - name: Push
+        if: github.event_name != 'pull_request'
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
-          cache-to: type=gha,mode=max

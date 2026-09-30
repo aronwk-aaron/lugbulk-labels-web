@@ -1,15 +1,19 @@
 // Pivots the wide per-person qty matrix (the "Order Here" tab) into one
 // label record per (person, part) pair where qty > 0. Port of
-// lugbulk-label's sheets_source.py — see that file for the reference
-// behavior this mirrors.
+// lugbulk-label's pivot.py — see that file for the reference behavior
+// this mirrors. Two sheet layouts are handled:
 //
-// Person columns are discovered by scanning the subheader row for "qty"
-// markers (see sheet_layout.h's kQtyMarker) rather than assumed at a fixed
-// column range — verified against real sheets from 2023-2026, where the
-// exact column an event's roster starts at has shifted between years (an
-// extra "Total QTY" column in older sheets pushed everyone right by one).
+//   - "qty marker": person names on the header row, and the row below
+//     marks each person's qty column "qty" (paired with a "$$" column).
+//   - "name/cost pair": each person is a header cell holding their name
+//     followed by one holding their running cost total (2026's master
+//     sheet), with a totals row above the header.
+//
+// Front-matter columns (element id, description, LEGO/BL color, weight)
+// are found by header text, falling back to fixed positions.
 #pragma once
 
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -17,17 +21,26 @@ namespace lugbulk {
 
 struct LabelRecord {
     std::string person;
-    std::string element_id;
+    std::string element_id;  // digits only — validated, safe to use in paths/URLs
     std::string description;
-    std::string color;
-    std::string qty;        // display text as it appeared on the sheet, e.g. "2,000"
+    std::string lego_color;
+    std::string bl_color;
+    std::string qty;  // normalized display text, e.g. "2000"
     std::string image_url;
+    std::optional<double> weight;  // grams per piece, from the sheet's Weight column
+    std::optional<double> catalog_weight;  // grams per piece, from BrickLink (bricklink.h)
+    // Filled in by ordering::order_records: "part_seq of part_total".
+    int part_seq = 0;
+    int part_total = 0;
 };
 
 struct SheetIssue {
-    int row;              // 1-indexed sheet row, matches the Sheets UI
-    std::string kind;      // "duplicate" | "bad_qty" | "missing_description" | "missing_color"
+    int row;  // 1-indexed sheet row, matches the Sheets UI
+    // "duplicate" | "bad_qty" | "bad_element_id" | "missing_description" |
+    // "missing_color" | "unmapped_color" | "bad_weight"
+    std::string kind;
     std::string detail;
+    std::string element_id = {};  // set for "missing_color", so a later lookup can clear it
 };
 
 // Pivots raw Sheets API rows (as returned by oauth::fetch_sheet_values) into
@@ -43,10 +56,12 @@ PivotResult pivot_sheet(const std::vector<std::vector<std::string>>& rows);
 
 // Parses a Sheets-formatted quantity string ("2,000", "150", etc.) into a
 // double, stripping thousands separators. Throws std::invalid_argument if
-// it's not numeric after stripping — callers that already ran pivot_sheet
-// only see qty strings that parsed cleanly (bad ones became a "bad_qty"
-// SheetIssue and were excluded from records), so this should never throw
-// on a LabelRecord's own qty field.
+// it's not numeric after stripping. A LabelRecord's own qty always parses.
 double parse_qty(const std::string& qty);
+
+// LEGO element IDs are 4-8 digits. Anything else is a typo or a stray
+// notes/footer row — and since the ID becomes an image cache filename and
+// part of the image URL, it must never contain path characters.
+bool is_valid_element_id(const std::string& element_id);
 
 }  // namespace lugbulk

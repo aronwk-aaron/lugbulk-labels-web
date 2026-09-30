@@ -20,6 +20,7 @@ find_package(Threads REQUIRED)
 find_package(OpenSSL REQUIRED)      # OAuth token exchange (HTTPS client) + Crow SSL support
 find_package(SQLite3 REQUIRED)      # sessions / users / sheets / run log
 find_package(CURL REQUIRED)         # outbound HTTPS to Google (OAuth + Sheets API)
+find_package(JPEG REQUIRED)         # decoding trans-part photos to outline them
 
 # --- PDF library: PoDoFo ---
 # No upstream CMake config on Debian (libpodofo-dev), so locate by hand.
@@ -31,29 +32,46 @@ if(NOT PODOFO_INCLUDE_DIR OR NOT PODOFO_LIBRARY)
     message(FATAL_ERROR "PoDoFo (podofo/podofo.h / libpodofo) not found — install libpodofo-dev")
 endif()
 
-add_executable(lugbulk_labels_web
-    src/main.cpp
+# Everything but main(), shared by the server and the tests.
+add_library(lugbulk_core STATIC
+    src/bricklink.cpp
     src/config.cpp
+    src/colors.cpp
     src/crypto.cpp
     src/db.cpp
+    src/image_backdrop.cpp
     src/oauth.cpp
+    src/ordering.cpp
     src/sheet_pivot.cpp
     src/reports.cpp
     src/labels_pdf.cpp
     src/pdf_text.cpp
 )
 
-target_include_directories(lugbulk_labels_web PRIVATE
-    include
+target_include_directories(lugbulk_core PUBLIC
+    src
     ${PODOFO_INCLUDE_DIR}
 )
 
-target_link_libraries(lugbulk_labels_web PRIVATE
+target_link_libraries(lugbulk_core PUBLIC
     Crow::Crow
     Threads::Threads
     OpenSSL::SSL
     OpenSSL::Crypto
     SQLite::SQLite3
     CURL::libcurl
+    JPEG::JPEG
     ${PODOFO_LIBRARY}
 )
+
+add_executable(lugbulk_labels_web src/main.cpp)
+target_link_libraries(lugbulk_labels_web PRIVATE lugbulk_core)
+
+# Unit tests: `cmake --build build && ctest --test-dir build`
+option(LUGBULK_BUILD_TESTS "Build unit tests" ON)
+if(LUGBULK_BUILD_TESTS)
+    enable_testing()
+    add_executable(lugbulk_tests tests/tests.cpp)
+    target_link_libraries(lugbulk_tests PRIVATE lugbulk_core)
+    add_test(NAME lugbulk_tests COMMAND lugbulk_tests)
+endif()

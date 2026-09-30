@@ -29,6 +29,10 @@ Config Config::load_from_env() {
         optional_env("GOOGLE_OAUTH_REDIRECT_URI", "http://localhost:8080/auth/callback");
     cfg.token_encryption_key_b64 = require_env("TOKEN_ENCRYPTION_KEY");
     cfg.data_dir = optional_env("LUGBULK_DATA_DIR", ".");
+    cfg.bricklink.consumer_key = optional_env("BRICKLINK_CONSUMER_KEY", "");
+    cfg.bricklink.consumer_secret = optional_env("BRICKLINK_CONSUMER_SECRET", "");
+    cfg.bricklink.token = optional_env("BRICKLINK_TOKEN", "");
+    cfg.bricklink.token_secret = optional_env("BRICKLINK_TOKEN_SECRET", "");
     return cfg;
 }
 

@@ -1,11 +1,15 @@
-// Lot-count report generation (CSV + PDF) — port of lugbulk-label's
-// manifest.py write_lot_counts_* functions. "Lot count" = number of
-// (person, part) label lines a person has; "pieces" = sum of their qtys.
+// Report generation (CSV + PDF) — port of lugbulk-label's manifest.py.
+//   - Lot counts: per person, "lot count" = number of (person, part) label
+//     lines they have; "pieces" = sum of their qtys.
+//   - Parts list: per part, total pieces and how many people ordered it,
+//     in label order.
 #pragma once
 
+#include <cstdint>
 #include <string>
 #include <vector>
 
+#include "ordering.h"
 #include "sheet_pivot.h"
 
 namespace lugbulk::reports {
@@ -35,5 +39,15 @@ std::string lot_counts_csv(const std::vector<LabelRecord>& records, SortBy sort_
 // One-page table PDF (returned as an in-memory buffer, never written to
 // disk): person / lot count / total pieces.
 std::vector<uint8_t> lot_counts_pdf(const std::vector<LabelRecord>& records, SortBy sort_by);
+
+// Header "order,element_id,description,lego_color,bl_color,total_pieces,
+// people,grams_per_piece,weight_source" + one row per part, in the order given.
+std::string parts_csv(const std::vector<ordering::PartSummary>& parts);
+
+// Printable parts list, one row per part, in the order given.
+std::vector<uint8_t> parts_pdf(const std::vector<ordering::PartSummary>& parts);
+
+// "~4.6 g/pc" (estimated), "12 g/pc" (from the sheet), or "size unknown".
+std::string weight_text(const ordering::PartSummary& part);
 
 }  // namespace lugbulk::reports
