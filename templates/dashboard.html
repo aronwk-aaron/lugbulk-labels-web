@@ -4,61 +4,132 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>lugbulk-labels-web</title>
+<script>
+  // Apply the saved theme before first paint (no flash of the wrong one).
+  try {
+    const t = localStorage.getItem('lugbulk.theme');
+    if (t === 'light' || t === 'dark') document.documentElement.dataset.theme = t;
+  } catch (e) {}
+</script>
 <style>
-  :root { color-scheme: light dark; }
-  body { font-family: system-ui, sans-serif; max-width: 900px; margin: 2rem auto; padding: 0 1rem; }
-  header { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 1.5rem; }
-  h1 { font-size: 1.25rem; margin: 0; }
-  h1 .meta { font-size: 0.75rem; color: #888; font-weight: normal; }
-  #whoami { color: #666; font-size: 0.9rem; }
-  section { margin-bottom: 2rem; }
-  h2 { font-size: 1rem; margin-bottom: 0.5rem; }
-  .row { display: flex; gap: 0.5rem; margin-bottom: 0.75rem; }
-  input[type=text] { flex: 1; padding: 0.4rem 0.6rem; }
-  button { padding: 0.4rem 0.8rem; cursor: pointer; }
+  :root {
+    color-scheme: light;
+    --bg: #f6f7f9; --surface: #ffffff; --fg: #1d2329; --muted: #667080;
+    --border: #d9dde3; --border-strong: #b9c0c9;
+    --button-bg: #ffffff; --button-hover: #eef1f5;
+    --accent: #1f6feb; --accent-hover: #1a5fcc; --accent-fg: #ffffff;
+    --error: #b42318; --ok: #1a7f37; --focus: #1f6feb66;
+  }
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+    --bg: #0f1216; --surface: #171b21; --fg: #e6e9ee; --muted: #98a1ae;
+    --border: #2b323c; --border-strong: #3c4550;
+    --button-bg: #20262e; --button-hover: #29313b;
+    --accent: #4b8ff5; --accent-hover: #6aa3f7; --accent-fg: #0b0f14;
+    --error: #f97066; --ok: #4ac26b; --focus: #4b8ff566;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      color-scheme: dark;
+      --bg: #0f1216; --surface: #171b21; --fg: #e6e9ee; --muted: #98a1ae;
+      --border: #2b323c; --border-strong: #3c4550;
+      --button-bg: #20262e; --button-hover: #29313b;
+      --accent: #4b8ff5; --accent-hover: #6aa3f7; --accent-fg: #0b0f14;
+      --error: #f97066; --ok: #4ac26b; --focus: #4b8ff566;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { font-family: system-ui, -apple-system, "Segoe UI", sans-serif; background: var(--bg);
+         color: var(--fg); max-width: 960px; margin: 0 auto; padding: 1.5rem 1rem 3rem;
+         line-height: 1.4; }
+  header { display: flex; justify-content: space-between; align-items: center; gap: 1rem;
+           flex-wrap: wrap; margin-bottom: 1.5rem; }
+  h1 { font-size: 1.3rem; margin: 0; }
+  h1 .version { font-size: 0.75rem; color: var(--muted); font-weight: normal; margin-left: 0.3rem; }
+  .who { display: flex; align-items: center; gap: 0.6rem; flex-wrap: wrap; }
+  #whoami { color: var(--muted); font-size: 0.9rem; }
+  section { background: var(--surface); border: 1px solid var(--border); border-radius: 10px;
+            padding: 1rem 1.25rem; margin-bottom: 1.25rem; }
+  section[hidden] { display: none; }
+  h2 { font-size: 1.05rem; margin: 0 0 0.75rem; }
+  .muted, .note { color: var(--muted); font-size: 0.85rem; }
+  .note { margin: 0 0 0.75rem; }
+  .error { color: var(--error); }
+  .ok { color: var(--ok); }
+  button, select, input { font: inherit; color: var(--fg); }
+  button { background: var(--button-bg); border: 1px solid var(--border-strong); border-radius: 6px;
+           padding: 0.35rem 0.8rem; cursor: pointer; white-space: nowrap; }
+  button:hover:not(:disabled) { background: var(--button-hover); }
+  button:disabled { opacity: 0.55; cursor: progress; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-fg); }
+  button.primary:hover:not(:disabled) { background: var(--accent-hover); }
+  button.danger { color: var(--error); }
+  select, input[type=text], input[type=search] {
+    background: var(--button-bg); border: 1px solid var(--border-strong); border-radius: 6px;
+    padding: 0.35rem 0.5rem; min-width: 0; }
+  :focus-visible { outline: 3px solid var(--focus); outline-offset: 1px; }
+  form#logout { display: inline; margin: 0; }
   ul { list-style: none; padding: 0; margin: 0; }
-  li { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap;
-       padding: 0.6rem 0; border-bottom: 1px solid #ddd; gap: 0.5rem; }
-  li .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-             max-width: 220px; display: inline-block; }
-  li .meta { color: #888; font-size: 0.8rem; }
-  li .actions { display: flex; gap: 0.4rem; flex-shrink: 0; align-items: center; }
-  .empty { color: #888; font-style: italic; }
-  .error, li .meta.error { color: #b00020; }
-  form#logout { display: inline; }
-  select { padding: 0.3rem; }
-  .options { display: flex; flex-wrap: wrap; gap: 0.75rem; margin-bottom: 0.75rem; font-size: 0.9rem; }
-  .options label { display: flex; gap: 0.3rem; align-items: center; }
-  #label-spec { max-width: 100%; }
-  li .actions { flex-wrap: wrap; }
-  li .issues { flex-basis: 100%; font-size: 0.85rem; margin: 0.25rem 0 0; padding-left: 1.2rem;
-               list-style: disc; }
-  li .issues li { display: list-item; border: 0; padding: 0.1rem 0; }
-  #design[hidden] { display: none; }
-  #design { border: 1px solid #ccc; border-radius: 6px; padding: 0.75rem 1rem; }
-  #design .switches { display: flex; flex-wrap: wrap; gap: 0.3rem 1rem; margin: 0.5rem 0; font-size: 0.9rem; }
-  #design .switches label { display: flex; gap: 0.3rem; align-items: center; }
-  #design .options .stock { flex: 1 1 100%; min-width: 0; }
-  #design .options .stock select { flex: 1; min-width: 0; width: 100%; }
-  #preview { width: 100%; height: 520px; border: 1px solid #ddd; background: #fff; }
-  .saved-note { color: #888; font-size: 0.8rem; }
+  a { color: var(--accent); }
+
+  /* Saved sheets: one card-like row each. */
+  .sheet { padding: 0.8rem 0; border-top: 1px solid var(--border); }
+  .sheet:first-child { border-top: 0; padding-top: 0.25rem; }
+  .sheet-head { display: flex; justify-content: space-between; align-items: baseline; gap: 0.75rem;
+                flex-wrap: wrap; margin-bottom: 0.5rem; }
+  .sheet-name { font-weight: 600; overflow-wrap: anywhere; }
+  .status { font-size: 0.85rem; margin: 0 0 0.5rem; }
+  .status:empty { display: none; }
+  .actions { display: flex; flex-wrap: wrap; gap: 0.4rem; }
+  .actions .spacer { flex: 1; }
+  .issues { font-size: 0.85rem; margin: 0.5rem 0 0; padding-left: 1.2rem; list-style: disc; }
+  .issues:empty { display: none; }
+  .empty { color: var(--muted); font-style: italic; }
+
+  /* Search results. */
+  .search-row { display: flex; gap: 0.5rem; margin-bottom: 0.75rem; }
+  .search-row input { flex: 1; }
+  .result { display: flex; justify-content: space-between; align-items: center; gap: 0.75rem;
+            padding: 0.5rem 0; border-top: 1px solid var(--border); }
+  .result:first-child { border-top: 0; }
+  .result .file { min-width: 0; overflow-wrap: anywhere; }
+
+  /* Controls rows. */
+  .options { display: flex; flex-wrap: wrap; align-items: center; gap: 0.6rem 1rem;
+             margin-bottom: 0.75rem; font-size: 0.9rem; }
+  .field { display: flex; flex-direction: column; gap: 0.2rem; font-size: 0.85rem; color: var(--muted); }
+  .field > * { color: var(--fg); }
+  .field.grow { flex: 1 1 320px; min-width: 0; }
+  .field.grow select { width: 100%; }
+  .inline-field { display: flex; align-items: center; gap: 0.4rem; }
+
+  /* Design panel. */
+  .switches { display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr));
+              gap: 0.35rem 1rem; margin: 0.25rem 0 0.9rem; font-size: 0.9rem; }
+  .switches label { display: flex; gap: 0.45rem; align-items: center; cursor: pointer; }
+  .switches input { width: 1rem; height: 1rem; accent-color: var(--accent); }
+  .design-head { display: flex; justify-content: space-between; align-items: baseline; gap: 1rem;
+                 flex-wrap: wrap; }
+  #preview { width: 100%; height: 560px; border: 1px solid var(--border); border-radius: 6px;
+             background: #fff; display: block; }
 </style>
 </head>
 <body>
 <header>
-  <h1>lugbulk-labels-web <span class="meta" title="build version">{{version}}</span></h1>
-  <span>
+  <h1>lugbulk-labels-web<span class="version" title="build version">{{version}}</span></h1>
+  <div class="who">
     <span id="whoami">{{email}}</span>
+    <button type="button" id="theme-btn" title="Color theme">Theme: Auto</button>
     <form id="logout" method="post" action="/auth/logout">
       <button type="submit">Log out</button>
     </form>
-  </span>
+  </div>
 </header>
 
 <section>
   <h2>Your saved sheets</h2>
   <div class="options">
-    <label>Reports as
+    <label class="inline-field">Parts list &amp; lot counts as
       <select id="report-format">
         <option value="pdf">PDF</option>
         <option value="csv">CSV</option>
@@ -69,19 +140,22 @@
 </section>
 
 <section id="design" hidden>
-  <h2>Label design: <span id="design-sheet"></span></h2>
-  <p class="saved-note">Saved with the sheet — everyone who has this sheet saved prints the same
-    design. The preview uses sample parts. <span id="design-status"></span></p>
+  <div class="design-head">
+    <h2>Label design — <span id="design-sheet"></span></h2>
+    <button type="button" id="design-close">Close</button>
+  </div>
+  <p class="note">Saved with the sheet: everyone who has this sheet saved prints this design.
+    The preview uses sample parts. <span id="design-status"></span></p>
   <div class="options">
-    <label class="stock">Label stock
+    <label class="field grow">Label stock
       <select id="label-spec">
         {{#spec_groups}}<optgroup label="{{label}}">{{#specs}}<option value="{{id}}"{{#selected}} selected{{/selected}}>{{name}}</option>{{/specs}}</optgroup>{{/spec_groups}}
       </select>
     </label>
-    <label>Find stock
-      <input type="search" id="label-filter" placeholder="e.g. 8162, 30857, shipping" size="16">
+    <label class="field">Find stock
+      <input type="search" id="label-filter" placeholder="8162, 30857, shipping…" size="18">
     </label>
-    <label>Part order
+    <label class="field">Part order
       <select id="part-order">
         <option value="heaviest">Heaviest parts first</option>
         <option value="lightest">Lightest parts first</option>
@@ -89,17 +163,16 @@
       </select>
     </label>
     <button type="button" id="test-page-btn">Alignment test page</button>
-    <button type="button" id="design-close">Close</button>
   </div>
   <div class="switches" id="switches"></div>
   <iframe id="preview" title="Label preview"></iframe>
-  <p class="saved-note">No preview showing (some phones can't show PDFs inline)?
+  <p class="note" style="margin-top:0.5rem">Preview blank (some phones can't show PDFs inline)?
     <a id="preview-open" href="#" target="_blank" rel="noopener">Open it in a new tab</a>.</p>
 </section>
 
 <section>
   <h2>Find a sheet</h2>
-  <div class="row">
+  <div class="search-row">
     <input type="text" id="search-box" placeholder="Search your Google Sheets by name&hellip;">
     <button id="search-btn" type="button">Search</button>
   </div>
@@ -138,6 +211,25 @@ for (const id of ['report-format']) {
   });
 }
 const opt = (id) => document.getElementById(id).value;
+
+// Color theme: Auto (follow the system) → Light → Dark, remembered per browser.
+(() => {
+  const btn = document.getElementById('theme-btn');
+  const order = ['auto', 'light', 'dark'];
+  const label = { auto: 'Auto', light: 'Light', dark: 'Dark' };
+  let theme = document.documentElement.dataset.theme || 'auto';
+  const apply = () => {
+    if (theme === 'auto') delete document.documentElement.dataset.theme;
+    else document.documentElement.dataset.theme = theme;
+    btn.textContent = 'Theme: ' + label[theme];
+  };
+  apply();
+  btn.addEventListener('click', () => {
+    theme = order[(order.indexOf(theme) + 1) % order.length];
+    try { localStorage.setItem('lugbulk.theme', theme); } catch (e) {}
+    apply();
+  });
+})();
 
 // Narrow the (long) label stock list to options matching the search box:
 // part number, any equivalent, size, or description.
@@ -285,17 +377,17 @@ async function loadSavedSheets() {
     const res = await api('/sheets');
     const data = await res.json();
     if (!data.sheets.length) {
-      list.appendChild(el('li', { class: 'empty', text: 'No sheets saved yet — search below to add one.' }));
+      list.appendChild(el('li', { class: 'empty result', text: 'No sheets saved yet — search below to add one.' }));
       return;
     }
     for (const sheet of data.sheets) {
-      const nameSpan = el('span', { class: 'name', text: sheet.display_name });
+      const nameSpan = el('span', { class: 'sheet-name', text: sheet.display_name });
 
-      const statusSpan = el('span', { class: 'meta' });
+      const statusSpan = el('p', { class: 'status muted' });
 
       const base = '/sheets/' + encodeURIComponent(sheet.row_id);
       const issuesList = el('ul', { class: 'issues' });
-      const historySpan = el('span', { class: 'meta history' });
+      const historySpan = el('span', { class: 'muted history' });
 
       // "Last run" line, from the server's run log.
       const REPORT_NAMES = { labels: 'Labels', lot_counts: 'Lot counts', parts: 'Parts list', checklist: 'Checklist' };
@@ -318,13 +410,13 @@ async function loadSavedSheets() {
         const btn = el('button', { type: 'button', text: label });
         btn.addEventListener('click', async () => {
           btn.disabled = true;
-          statusSpan.classList.remove('error');
+          statusSpan.classList.remove('error'); statusSpan.classList.add('muted');
           statusSpan.textContent = busyText;
           try {
             await downloadFrom(pathFn(), fallbackFn());
             statusSpan.textContent = '';
           } catch (e) {
-            statusSpan.classList.add('error');
+            statusSpan.classList.add('error'); statusSpan.classList.remove('muted');
             statusSpan.textContent = e.message;
           }
           btn.disabled = false;
@@ -336,7 +428,7 @@ async function loadSavedSheets() {
       const checkBtn = el('button', { type: 'button', text: 'Check sheet' });
       checkBtn.addEventListener('click', async () => {
         checkBtn.disabled = true;
-        statusSpan.classList.remove('error');
+        statusSpan.classList.remove('error'); statusSpan.classList.add('muted');
         statusSpan.textContent = 'Checking…';
         issuesList.textContent = '';
         try {
@@ -349,7 +441,7 @@ async function loadSavedSheets() {
             issuesList.appendChild(el('li', { text: 'Row ' + issue.row + ': ' + issue.detail }));
           }
         } catch (e) {
-          statusSpan.classList.add('error');
+          statusSpan.classList.add('error'); statusSpan.classList.remove('muted');
           statusSpan.textContent = e.message || 'Check failed — try again.';
         }
         checkBtn.disabled = false;
@@ -384,16 +476,19 @@ async function loadSavedSheets() {
         }
       });
 
-      const actions = el('span', { class: 'actions' }, [checkBtn, designBtn, labelsBtn, checklistBtn, partsBtn, lotsBtn, delBtn]);
-      list.appendChild(el('li', {}, [
-        el('span', {}, [nameSpan, document.createElement('br'), statusSpan,
-                        document.createElement('br'), historySpan]),
+      labelsBtn.classList.add('primary');
+      delBtn.classList.add('danger');
+      const actions = el('div', { class: 'actions' },
+        [labelsBtn, designBtn, checklistBtn, partsBtn, lotsBtn, checkBtn, el('span', { class: 'spacer' }), delBtn]);
+      list.appendChild(el('li', { class: 'sheet' }, [
+        el('div', { class: 'sheet-head' }, [nameSpan, historySpan]),
+        statusSpan,
         actions,
         issuesList
       ]));
     }
   } catch (e) {
-    list.appendChild(el('li', { class: 'error', text: 'Could not load saved sheets.' }));
+    list.appendChild(el('li', { class: 'error result', text: 'Could not load saved sheets.' }));
   }
 }
 
@@ -401,18 +496,18 @@ async function runSearch() {
   const q = document.getElementById('search-box').value.trim();
   const results = document.getElementById('search-results');
   results.textContent = '';
-  results.appendChild(el('li', { class: 'empty', text: 'Searching…' }));
+  results.appendChild(el('li', { class: 'empty result', text: 'Searching…' }));
   try {
     const res = await api('/sheets/search?q=' + encodeURIComponent(q));
     const data = await res.json();
     results.textContent = '';
     if (!data.files.length) {
-      results.appendChild(el('li', { class: 'empty', text: 'No matching spreadsheets found.' }));
+      results.appendChild(el('li', { class: 'empty result', text: 'No matching spreadsheets found.' }));
       return;
     }
     for (const file of data.files) {
-      const nameSpan = el('span', { class: 'name', text: file.name });
-      const metaSpan = el('span', { class: 'meta', text: file.modifiedTime ? file.modifiedTime.slice(0, 10) : '' });
+      const nameSpan = el('span', { class: 'sheet-name', text: file.name });
+      const metaSpan = el('span', { class: 'muted', text: file.modifiedTime ? '  ·  edited ' + file.modifiedTime.slice(0, 10) : '' });
       const addBtn = el('button', { type: 'button', text: 'Add' });
       addBtn.addEventListener('click', async () => {
         addBtn.disabled = true;
@@ -430,11 +525,11 @@ async function runSearch() {
           addBtn.textContent = 'Add';
         }
       });
-      results.appendChild(el('li', {}, [el('span', {}, [nameSpan, document.createTextNode(' '), metaSpan]), addBtn]));
+      results.appendChild(el('li', { class: 'result' }, [el('span', { class: 'file' }, [nameSpan, metaSpan]), addBtn]));
     }
   } catch (e) {
     results.textContent = '';
-    results.appendChild(el('li', { class: 'error', text: 'Search failed — try again.' }));
+    results.appendChild(el('li', { class: 'error result', text: 'Search failed — try again.' }));
   }
 }
 
