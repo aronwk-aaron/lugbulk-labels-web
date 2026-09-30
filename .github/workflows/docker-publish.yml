@@ -94,6 +94,29 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
+      # The browser code (static/js/) must match the C++ it ports: the build
+      # above ran tests/golden.cpp on the fixtures; export what it wrote (all
+      # cache hits) and check the JavaScript gives the same results.
+      - name: Export golden files
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          target: golden
+          outputs: type=local,dest=golden
+          cache-from: type=gha
+
+      - name: Set up Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+
+      - name: Browser code tests (parity with the C++)
+        env:
+          GOLDEN_DIR: golden
+        run: |
+          ls golden
+          node --test tests/js/*.test.mjs
+
       - name: Smoke test the container
         env:
           VERSION: ${{ steps.version.outputs.version }}
@@ -165,6 +188,21 @@ jobs:
           curl -fsS -D specs.headers -o specs.json http://localhost:8080/label-specs.json
           grep -qi '^cache-control: public, max-age=3600' specs.headers
           python3 -c 'import json; d=json.load(open("specs.json")); assert d["default"]=="avery5162" and len(d["specs"])>40 and all("label_width_mm" in s for s in d["specs"])'
+          # Browser modules: JavaScript, cacheable for 5 minutes, flat
+          # [a-z0-9_-]+.js names only.
+          curl -fsS -D js.headers -o pivot.js http://localhost:8080/static/js/pivot.js
+          cat js.headers
+          grep -qi '^content-type: text/javascript' js.headers
+          grep -qi '^cache-control: public, max-age=300' js.headers
+          grep -q 'export function pivotSheet' pivot.js
+          for bad in nope.js Pivot.js package.json ..%2Fpivot.js ..%2F..%2Fsql%2Fschema.sql; do
+            code="$(curl -s -o /dev/null -w '%{http_code}' "http://localhost:8080/static/js/$bad")"
+            echo "/static/js/$bad -> $code"
+            test "$code" = 404 || test "$code" = 400
+          done
+          # The dashboard's CSP lets same-origin modules load beside its nonce.
+          curl -fsS -D dash.headers -o /dev/null http://localhost:8080/
+          grep -qi "^content-security-policy: default-src 'self'; script-src 'self' 'nonce-" dash.headers
           # Everything else stays uncacheable.
           curl -fsS -D version.headers -o /dev/null http://localhost:8080/version
           grep -qi '^cache-control: no-store, private' version.headers

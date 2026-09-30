@@ -10,9 +10,15 @@ WORKDIR /src
 COPY . .
 
 # Unit tests run as part of the build: a failing test fails the image.
+# Also writes the golden files the browser code is checked against.
 RUN cmake -B build -DCMAKE_BUILD_TYPE=Release \
     && cmake --build build -j"$(nproc)" \
-    && ctest --test-dir build --output-on-failure
+    && ctest --test-dir build --output-on-failure \
+    && ./build/lugbulk_golden build/golden
+
+# --- Golden files only (CI: `--target golden --output type=local,...`) ---
+FROM scratch AS golden
+COPY --from=build /src/build/golden/ /
 
 # --- Runtime stage ---
 FROM debian:bookworm-slim
@@ -31,6 +37,7 @@ WORKDIR /app
 COPY --from=build /src/build/lugbulk_labels_web /app/lugbulk_labels_web
 COPY sql/schema.sql /app/sql/schema.sql
 COPY templates/ /app/templates/
+COPY static/ /app/static/
 COPY data/ /app/data/
 COPY docker/entrypoint.sh /app/entrypoint.sh
 

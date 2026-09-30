@@ -30,6 +30,7 @@
 //   POST   /bricklink/lookup    part/color/weight for element ids: {"ids":[...]}
 //   GET    /sheets/:id/values   the "Order Here" tab's raw cell rows (JSON, no pivot)
 //   GET    /label-specs.json    the label stock inventory
+//   GET    /static/js/:name.js  browser-side modules (static/js/)
 //
 // See sql/schema.sql for the users/sheets/runs/sessions tables.
 
@@ -43,6 +44,7 @@
 #include <atomic>
 #include <condition_variable>
 #include <deque>
+#include <filesystem>
 #include <thread>
 #include <cctype>
 #include <ctime>
@@ -70,6 +72,7 @@
 #include "zip_writer.h"
 #include "oauth.h"
 #include "ordering.h"
+#include "records.h"
 #include "reports.h"
 #include "sheet_layout.h"
 #include "sheet_pivot.h"
@@ -107,9 +110,7 @@ std::string app_origin(const Config& cfg) { return cfg.public_url; }
 //    already keep cross-site POSTs unauthenticated; this is belt and braces
 //    for older browsers.
 // Size limits on what one request may make the server do.
-constexpr int kMaxSheetRows = 3000;       // rows fetched from the "Order Here" tab
-constexpr size_t kMaxLabels = 20000;      // labels in one run
-constexpr size_t kMaxParts = 2000;        // distinct parts in one run (photo downloads)
+// (Per-run sheet size limits: records.h.)
 constexpr size_t kMaxSavedSheets = 50;    // per user
 constexpr int kMaxSessionsPerUser = 10;
 
@@ -246,8 +247,16 @@ JobAdmission enter_job_gate(int64_t gate_id) {
 // connect-src isn't set, so it falls back to default-src 'self': fetch()
 // still only reaches this app (the Picker talks to Google from inside its
 // own iframe, not from our page).
+// A page with a nonce also allows script-src 'self', for the browser-side
+// modules under /static/js/ (and what they import): browsers don't reliably
+// pass a <script type=module nonce> element's nonce on to its imports. That
+// adds nothing an attacker can use: nosniff is on everywhere and module
+// scripts must be served as JavaScript, and /static/js/ (fixed files
+// shipped with the app) is the only route that serves JavaScript — every
+// other response is JSON, text, HTML, a PDF or an image. Inline script
+// still needs the nonce, and pages without one still run no script at all.
 std::string csp_for(const std::string& nonce, bool google_picker = false) {
-    std::string script = nonce.empty() ? "'none'" : "'nonce-" + nonce + "'";
+    std::string script = nonce.empty() ? "'none'" : "'self' 'nonce-" + nonce + "'";
     std::string frames = "blob:";
     if (google_picker && !nonce.empty()) {
         script += " https://apis.google.com";
@@ -464,46 +473,41 @@ std::string safe_filename_stem(const std::string& display_name) {
     return out.substr(start, end - start + 1);
 }
 
-// Fills in BrickLink data from the catalog files (see bricklink.h): each
-// record's catalog_weight, and BrickLink/LEGO color names the sheet left
-// blank. A no-op when the files aren't there.
+// Fills in BrickLink data from the catalog files (see bricklink.h and
+// records::apply_bricklink). A no-op when the files aren't there.
 bricklink::CatalogCache* g_catalog = nullptr;  // set in main()
 
 void apply_bricklink(PivotResult& pivot) {
     if (!g_catalog || pivot.records.empty()) return;
     std::shared_ptr<const bricklink::Catalog> catalog = g_catalog->get();
-    if (catalog->empty()) return;
-    std::set<std::string> colored;
-    for (auto& r : pivot.records) {
-        auto it = catalog->find(r.element_id);
-        if (it == catalog->end()) continue;
-        r.catalog_weight = it->second.weight;
-        if (r.bl_color.empty() && !it->second.color.empty()) {
-            r.bl_color = it->second.color;
-            if (r.lego_color.empty()) r.lego_color = colors::resolve("", r.bl_color).lego;
-            colored.insert(r.element_id);
-        }
+    records::apply_bricklink(pivot, *catalog);
+}
+
+using records::check_run_size;
+using records::TooBig;
+
+// Browser modules (static/js/*.js), read into memory once at startup. Only
+// flat names like "pivot.js" ([a-z0-9_-]+ then .js) are loaded or served:
+// no paths, so nothing outside that folder can be reached.
+bool is_static_js_name(const std::string& name) {
+    if (name.size() < 4 || name.size() > 64 || name.compare(name.size() - 3, 3, ".js") != 0) {
+        return false;
     }
-    // A color BrickLink supplied is no longer missing.
-    std::erase_if(pivot.issues, [&](const SheetIssue& i) {
-        return i.kind == "missing_color" && colored.count(i.element_id);
+    return std::all_of(name.begin(), name.end() - 3, [](unsigned char c) {
+        return (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_' || c == '-';
     });
 }
 
-// A sheet over the per-run size limits.
-struct TooBig : std::runtime_error {
-    using std::runtime_error::runtime_error;
-};
-
-void check_run_size(const PivotResult& pivot) {
-    std::set<std::string> parts;
-    for (const auto& r : pivot.records) parts.insert(r.element_id);
-    if (pivot.records.size() > kMaxLabels || parts.size() > kMaxParts) {
-        throw TooBig("this sheet has " + std::to_string(pivot.records.size()) + " labels and " +
-                     std::to_string(parts.size()) + " parts; the limit is " +
-                     std::to_string(kMaxLabels) + " labels / " + std::to_string(kMaxParts) +
-                     " parts per run");
+std::map<std::string, std::string> load_static_js(const std::string& dir) {
+    std::map<std::string, std::string> files;
+    std::error_code ec;
+    for (const auto& entry : std::filesystem::directory_iterator(dir, ec)) {
+        std::string name = entry.path().filename().string();
+        if (!entry.is_regular_file() || !is_static_js_name(name)) continue;
+        std::ifstream in(entry.path(), std::ios::binary);
+        files[name].assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
     }
+    return files;
 }
 
 // The "Order Here" tab's cells, unpivoted (what fetch_and_pivot reads, and
@@ -517,7 +521,7 @@ std::vector<std::vector<std::string>> fetch_order_rows(const Config& cfg, Db& db
     // Rows are capped too: a real order sheet is ~100 rows, and a sheet
     // of millions shouldn't be able to exhaust the server's memory.
     std::string range = "'" + std::string(layout::kSourceTab) + "'!A1:ZZ" +
-                        std::to_string(kMaxSheetRows);
+                        std::to_string(records::kMaxSheetRows);
     return oauth::fetch_sheet_values(access_token, spreadsheet_id, range);
 }
 
@@ -537,19 +541,9 @@ PivotResult fetch_and_pivot(const Config& cfg, Db& db, int64_t user_id,
 // uses the "Order Here" tab, or failing that the first tab with orders on
 // it. Throws spreadsheet::Error (bad file) or TooBig.
 PivotResult pivot_upload(const std::string& data) {
-    PivotResult pivot;
-    if (spreadsheet::is_xlsx(data)) {
-        for (auto& rows : spreadsheet::read_xlsx(data, layout::kSourceTab)) {
-            if (rows.size() > static_cast<size_t>(kMaxSheetRows)) rows.resize(kMaxSheetRows);
-            pivot = pivot_sheet(rows);
-            if (!pivot.records.empty()) break;
-        }
-    } else {
-        auto rows = spreadsheet::read_csv(data);
-        if (rows.size() > static_cast<size_t>(kMaxSheetRows)) rows.resize(kMaxSheetRows);
-        pivot = pivot_sheet(rows);
-    }
-    check_run_size(pivot);
+    PivotResult pivot = spreadsheet::is_xlsx(data)
+                            ? records::pivot_tabs(spreadsheet::read_xlsx(data, layout::kSourceTab))
+                            : records::pivot_tabs({spreadsheet::read_csv(data)});
     apply_bricklink(pivot);
     return pivot;
 }
@@ -651,28 +645,6 @@ std::string build_bundle(PivotResult& pivot, const layout::LabelSpec& spec,
         {stem + " lot counts.csv", lots_csv},
         {stem + " sheet check.txt", check},
     });
-}
-
-std::string sheet_error_json(const PivotResult& pivot) {
-    crow::json::wvalue body;
-    body["labels"] = pivot.records.size();
-    std::set<std::string> people, parts;
-    for (const auto& r : pivot.records) {
-        people.insert(r.person);
-        parts.insert(r.element_id);
-    }
-    body["people"] = people.size();
-    body["parts"] = parts.size();
-    std::vector<crow::json::wvalue> issues;
-    for (const auto& issue : pivot.issues) {
-        crow::json::wvalue item;
-        item["row"] = issue.row;
-        item["kind"] = issue.kind;
-        item["detail"] = issue.detail;
-        issues.push_back(std::move(item));
-    }
-    body["issues"] = std::move(issues);
-    return body.dump();
 }
 
 // Drive/Sheets file ids are URL-safe base64-ish; reject anything else
@@ -1132,7 +1104,7 @@ int main() {
         try {
             PivotResult pivot = fetch_and_pivot(cfg, *db, user->id, owned->sheet_id);
             g_pivots->put(user->id, owned->sheet_row_id, pivot);
-            crow::response res(200, sheet_error_json(pivot));
+            crow::response res(200, records::check_summary_json(pivot));
             res.set_header("Content-Type", "application/json");
             return res;
         } catch (const std::exception& e) {
@@ -1305,6 +1277,19 @@ int main() {
         crow::response res(200, label_specs_json);
         res.set_header("Content-Type", "application/json");
         res.set_header("Cache-Control", "public, max-age=3600");
+        return res;
+    });
+
+    // Browser-side modules: GET /static/js/<name>.js (see load_static_js).
+    // The same for everyone; a short cache so a new release is picked up soon.
+    const std::map<std::string, std::string> static_js = load_static_js("static/js");
+    CROW_ROUTE(app, "/static/js/<string>")([&static_js](const std::string& name) {
+        auto it = is_static_js_name(name) ? static_js.find(name) : static_js.end();
+        if (it == static_js.end()) return crow::response(404, "not found");
+        crow::response res(200, it->second);
+        res.set_header("Content-Type", "text/javascript; charset=utf-8");
+        // Kept by SecurityMiddleware (it only forces no-store on non-public responses).
+        res.set_header("Cache-Control", "public, max-age=300");
         return res;
     });
 
@@ -1633,7 +1618,7 @@ int main() {
     });
     CROW_ROUTE(app, "/upload/check").methods(crow::HTTPMethod::Post)([&](const crow::request& req) {
         return upload(req, Render{true, [](PivotResult& pivot, const EffectiveDesign&, const std::string&) {
-            crow::response res(200, sheet_error_json(pivot));
+            crow::response res(200, records::check_summary_json(pivot));
             res.set_header("Content-Type", "application/json");
             return res;
         }});

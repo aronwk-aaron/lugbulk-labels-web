@@ -188,8 +188,9 @@ place for TLS and connection limits; the app itself serves plain HTTP.
 - Nothing personal is logged: no emails, names, tokens or request URLs
   (Crow's access log is off); errors log only internal user/sheet ids.
 
-**Hardening:** a strict Content-Security-Policy (the dashboard's scripts
-run only with a per-response nonce; no other script can), `nosniff`,
+**Hardening:** a strict Content-Security-Policy (the dashboard's inline
+scripts run only with a per-response nonce, plus the app's own
+`/static/js/` modules; no other script can), `nosniff`,
 `X-Frame-Options: DENY`, HSTS over https, and a `text/plain` default;
 state-changing requests from another origin are refused; session cookies
 are HttpOnly, SameSite=Lax (Secure over https) and stored hashed; refresh
@@ -321,7 +322,12 @@ or with the compose file: `LUGBULK_TAG=canary docker compose pull && docker comp
 | `src/zip_writer.{h,cpp}` | Builds the "Download all" `.zip` in memory |
 | `src/spreadsheet.{h,cpp}` | Reads uploaded `.xlsx` (bounded unzip + SpreadsheetML) and `.csv` |
 | `src/pdf_text.{h,cpp}` | UTF-8 → WinAnsi for PDF text |
+| `src/records.{h,cpp}` | Row cap, per-run size limits, BrickLink data on records, the "Check sheet" JSON |
+| `static/js/` | Browser ports of the pure data logic (plain ES modules, served at `/static/js/<name>.js`): `pivot.js`, `ordering.js`, `colors.js`, `layout.js`, `records.js` |
 | `tests/tests.cpp` | Unit tests (`ctest`) |
+| `tests/golden.cpp` | `lugbulk_golden <dir>`: writes what the C++ makes of each fixture, for the JS parity test |
+| `tests/js/` | `node --test` tests for `static/js/`; `GOLDEN_DIR=<dir>` checks it matches the C++ (CI does this) |
+| `tests/fixtures/` | Invented order sheets (`.xlsx`, `.csv`) used by the tests |
 | `CMakeLists.txt` | Build config; fetches Crow, locates PoDoFo/SQLite3/CURL/OpenSSL/Asio |
 | `sql/schema.sql` | SQLite schema: users, sheets, runs, sessions |
 | `templates/dashboard.html` | Mustache template for the logged-in dashboard page (Crow's bundled `crow::mustache`) |
