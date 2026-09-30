@@ -100,7 +100,6 @@ constexpr int kMaxSheetRows = 3000;       // rows fetched from the "Order Here" 
 constexpr size_t kMaxLabels = 20000;      // labels in one run
 constexpr size_t kMaxParts = 2000;        // distinct parts in one run (photo downloads)
 constexpr size_t kMaxSavedSheets = 50;    // per user
-constexpr size_t kMaxBrickLinkLookups = 300;  // new BrickLink lookups per run
 constexpr int kMaxSessionsPerUser = 10;
 
 // Rate limits and caps shared by every request (see rate_limits.h). Built once
@@ -118,13 +117,11 @@ struct Guards {
     // Live design preview and alignment test page, per user: 20, then 1/second.
     limits::RateLimiter preview_per_user{20, 1};
     limits::JobGate jobs;
-    limits::DailyBudget bricklink_calls;
     limits::Allowlist allowlist;
     bool trust_proxy;
 
     explicit Guards(const Config& cfg)
         : jobs(cfg.max_concurrent_jobs),
-          bricklink_calls(cfg.bricklink_daily_calls),
           allowlist(cfg.allowed_emails),
           trust_proxy(cfg.trust_proxy) {}
 };
@@ -361,74 +358,19 @@ std::string safe_filename_stem(const std::string& display_name) {
     return out.substr(start, end - start + 1);
 }
 
-// Looks every part up on BrickLink (cached in the DB; a no-op without
-// credentials): sets each record's catalog_weight, and fills in color
-// names the sheet left blank. Never fails the request — an API problem
-// just means estimated weights, and is logged.
-void apply_bricklink(const Config& cfg, Db& db, PivotResult& pivot) {
-    constexpr int64_t kMissRetrySeconds = 7 * 24 * 60 * 60;
-    constexpr size_t kWorkers = 4;
-    if (!cfg.bricklink.complete() || pivot.records.empty()) return;
+// Fills in BrickLink data from the catalog files (see bricklink.h): each
+// record's catalog_weight, and BrickLink/LEGO color names the sheet left
+// blank. A no-op when the files aren't there.
+bricklink::CatalogCache* g_catalog = nullptr;  // set in main()
 
-    std::vector<std::string> ids;
-    for (const auto& r : pivot.records) ids.push_back(r.element_id);
-    std::sort(ids.begin(), ids.end());
-    ids.erase(std::unique(ids.begin(), ids.end()), ids.end());
-
-    std::map<std::string, BrickLinkPart> parts = db.get_bricklink_parts(ids);
-    const int64_t now = static_cast<int64_t>(std::time(nullptr));
-    std::vector<std::string> todo;
-    for (const auto& id : ids) {
-        auto it = parts.find(id);
-        bool fresh = it != parts.end() &&
-                     (it->second.weight || now - it->second.fetched_at < kMissRetrySeconds);
-        if (!fresh) todo.push_back(id);
-    }
-    // Two API calls per lookup; stay inside the per-run cap and the
-    // server's daily share of BrickLink's quota. Anything left over is
-    // looked up on a later run.
-    if (todo.size() > kMaxBrickLinkLookups) todo.resize(kMaxBrickLinkLookups);
-    if (!todo.empty()) {
-        int granted = g_guards ? g_guards->bricklink_calls.take(static_cast<int>(todo.size()) * 2) / 2
-                               : static_cast<int>(todo.size());
-        if (granted < static_cast<int>(todo.size())) {
-            std::cerr << "bricklink: daily call budget reached; " << todo.size() - granted
-                      << " lookups deferred" << std::endl;
-        }
-        todo.resize(static_cast<size_t>(granted));
-    }
-
-    if (!todo.empty()) {
-        std::mutex mu;
-        std::atomic<size_t> next{0};
-        std::atomic<bool> api_refused{false};
-        auto worker = [&] {
-            for (size_t i; !api_refused && (i = next.fetch_add(1)) < todo.size();) {
-                try {
-                    bricklink::PartInfo info = bricklink::fetch(todo[i], cfg.bricklink);
-                    BrickLinkPart p{todo[i], info.part_no, info.color, info.weight, now};
-                    std::lock_guard<std::mutex> lock(mu);
-                    db.put_bricklink_part(p);
-                    parts[todo[i]] = std::move(p);
-                } catch (const bricklink::ApiError& e) {
-                    if (!api_refused.exchange(true)) std::cerr << e.what() << std::endl;
-                } catch (const std::exception& e) {
-                    std::cerr << "bricklink lookup of " << todo[i] << " failed: " << e.what()
-                              << std::endl;  // network blip: stays uncached, retried next time
-                }
-            }
-        };
-        std::vector<std::future<void>> futures;
-        for (size_t i = 0; i < std::min(kWorkers, todo.size()); ++i) {
-            futures.push_back(std::async(std::launch::async, worker));
-        }
-        for (auto& f : futures) f.wait();
-    }
-
+void apply_bricklink(PivotResult& pivot) {
+    if (!g_catalog || pivot.records.empty()) return;
+    std::shared_ptr<const bricklink::Catalog> catalog = g_catalog->get();
+    if (catalog->empty()) return;
     std::set<std::string> colored;
     for (auto& r : pivot.records) {
-        auto it = parts.find(r.element_id);
-        if (it == parts.end()) continue;
+        auto it = catalog->find(r.element_id);
+        if (it == catalog->end()) continue;
         r.catalog_weight = it->second.weight;
         if (r.bl_color.empty() && !it->second.color.empty()) {
             r.bl_color = it->second.color;
@@ -472,7 +414,7 @@ PivotResult fetch_and_pivot(const Config& cfg, Db& db, int64_t user_id,
                      std::to_string(kMaxLabels) + " labels / " + std::to_string(kMaxParts) +
                      " parts per run");
     }
-    apply_bricklink(cfg, db, pivot);
+    apply_bricklink(pivot);
     return pivot;
 }
 
@@ -507,43 +449,6 @@ std::optional<EffectiveDesign> resolve_design(const std::optional<Design>& saved
     return EffectiveDesign{spec, *order, *options};
 }
 
-// Looks a newly saved sheet's parts up on BrickLink in the background, so
-// the first real print doesn't wait on them. One worker thread, a short
-// queue, and no retries: it's only a head start.
-class BackgroundRefresher {
-public:
-    BackgroundRefresher(const Config& cfg, Db& db) : cfg_(cfg), db_(db) {
-        if (cfg_.bricklink.complete()) thread_ = std::thread([this] { run(); });
-    }
-    ~BackgroundRefresher() {
-        {
-            std::lock_guard<std::mutex> lock(mu_);
-            stop_ = true;
-        }
-        cv_.notify_one();
-        if (thread_.joinable()) thread_.join();
-    }
-
-    void enqueue(int64_t user_id, const std::string& google_sheet_id) {
-        if (!thread_.joinable()) return;  // no BrickLink credentials: nothing to do
-        std::lock_guard<std::mutex> lock(mu_);
-        if (queue_.size() >= 16) return;  // busy: the first print will do it
-        queue_.emplace_back(user_id, google_sheet_id);
-        cv_.notify_one();
-    }
-
-private:
-    void run();
-
-    const Config& cfg_;
-    Db& db_;
-    std::mutex mu_;
-    std::condition_variable cv_;
-    std::deque<std::pair<int64_t, std::string>> queue_;
-    bool stop_ = false;
-    std::thread thread_;
-};
-
 // Turns a failed Google call into a response the organizer can act on.
 crow::response google_error(const std::exception& e) {
     if (auto* big = dynamic_cast<const TooBig*>(&e)) {
@@ -568,25 +473,6 @@ crow::response google_error(const std::exception& e) {
         }
     }
     return crow::response(502, "Couldn't reach Google Sheets — try again in a minute.");
-}
-
-void BackgroundRefresher::run() {
-    for (;;) {
-        std::pair<int64_t, std::string> job;
-        {
-            std::unique_lock<std::mutex> lock(mu_);
-            cv_.wait(lock, [&] { return stop_ || !queue_.empty(); });
-            if (stop_) return;
-            job = queue_.front();
-            queue_.pop_front();
-        }
-        try {
-            fetch_and_pivot(cfg_, db_, job.first, job.second);  // caches BrickLink data
-        } catch (const std::exception& e) {
-            std::cerr << "background refresh failed for user " << job.first << ": " << e.what()
-                      << std::endl;
-        }
-    }
 }
 
 std::string sheet_error_json(const PivotResult& pivot) {
@@ -666,7 +552,8 @@ int main() {
 
     Guards guards(cfg);
     g_guards = &guards;
-    BackgroundRefresher refresher(cfg, *db);
+    bricklink::CatalogCache catalog(cfg.data_dir + "/bricklink");
+    g_catalog = &catalog;
     if (guards.allowlist.empty()) {
         std::cerr << "warning: ALLOWED_EMAILS is not set — any Google account that can pass "
                      "the OAuth consent screen can sign in" << std::endl;
@@ -909,7 +796,7 @@ int main() {
     // generate time will fail cleanly if it's bogus or access was revoked,
     // and re-checking on every save just doubles the Google round trips.
     CROW_ROUTE(app, "/sheets").methods(crow::HTTPMethod::Post)(
-        [&cfg, &db, &refresher](const crow::request& req) {
+        [&cfg, &db](const crow::request& req) {
             auto user = current_user(*db, req);
             if (!user) return crow::response(401, "not logged in");
 
@@ -948,7 +835,6 @@ int main() {
             }
             try {
                 Sheet saved = db->add_sheet(user->id, sheet_id, display_name);
-                refresher.enqueue(user->id, saved.sheet_id);
                 std::string body = "{\"row_id\":" + std::to_string(saved.id) + ",";
                 body += "\"sheet_id\":\"" + json_escape(saved.sheet_id) + "\",";
                 body += "\"display_name\":\"" + json_escape(saved.display_name) + "\"}";

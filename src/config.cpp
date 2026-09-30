@@ -43,11 +43,6 @@ Config Config::load_from_env() {
     cfg.allowed_emails = optional_env("ALLOWED_EMAILS", "");
     cfg.trust_proxy = optional_env("TRUST_PROXY", "") == "1";
     cfg.max_concurrent_jobs = positive_int_env("MAX_CONCURRENT_JOBS", 2);
-    cfg.bricklink_daily_calls = positive_int_env("BRICKLINK_DAILY_CALLS", 4000);
-    cfg.bricklink.consumer_key = optional_env("BRICKLINK_CONSUMER_KEY", "");
-    cfg.bricklink.consumer_secret = optional_env("BRICKLINK_CONSUMER_SECRET", "");
-    cfg.bricklink.token = optional_env("BRICKLINK_TOKEN", "");
-    cfg.bricklink.token_secret = optional_env("BRICKLINK_TOKEN_SECRET", "");
     return cfg;
 }
 

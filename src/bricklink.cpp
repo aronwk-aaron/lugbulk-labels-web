@@ -1,153 +1,126 @@
 #include "bricklink.h"
 
-#include <curl/curl.h>
-#include <openssl/evp.h>
-#include <openssl/hmac.h>
+#include <dirent.h>
+#include <sys/stat.h>
 
 #include <algorithm>
-#include <ctime>
-#include <memory>
+#include <cctype>
+#include <fstream>
 #include <vector>
-
-#include "crow/json.h"
-#include "crypto.h"
 
 namespace lugbulk::bricklink {
 
 namespace {
 
-constexpr const char* kApiBase = "https://api.bricklink.com/api/store/v1";
-
-// RFC 3986 percent-encoding: everything but unreserved characters.
-std::string pct(const std::string& s) {
-    static const char* hex = "0123456789ABCDEF";
-    std::string out;
-    for (unsigned char c : s) {
-        if (std::isalnum(c) || c == '-' || c == '.' || c == '_' || c == '~') {
-            out.push_back(static_cast<char>(c));
-        } else {
-            out += '%';
-            out += hex[c >> 4];
-            out += hex[c & 0x0f];
-        }
+std::vector<std::string> split_tabs(std::string line) {
+    while (!line.empty() && (line.back() == '\r' || line.back() == '\n')) line.pop_back();
+    std::vector<std::string> out;
+    size_t start = 0;
+    for (;;) {
+        size_t tab = line.find('\t', start);
+        out.push_back(line.substr(start, tab == std::string::npos ? std::string::npos : tab - start));
+        if (tab == std::string::npos) return out;
+        start = tab + 1;
     }
-    return out;
 }
 
-size_t write_cb(char* ptr, size_t size, size_t nmemb, void* userdata) {
-    auto* out = static_cast<std::string*>(userdata);
-    if (out->size() + size * nmemb > 1024 * 1024) return 0;  // API answers are tiny; abort
-    out->append(ptr, size * nmemb);
-    return size * nmemb;
+std::string lower_trim(std::string s) {
+    s.erase(0, s.find_first_not_of(" \t\r\n"));
+    s.erase(s.find_last_not_of(" \t\r\n") + 1);
+    std::transform(s.begin(), s.end(), s.begin(), [](unsigned char c) { return std::tolower(c); });
+    return s;
 }
 
-// GETs an API path. Returns the response's `data`, or a null value if
-// BrickLink says the item doesn't exist.
-crow::json::rvalue get(const std::string& path, const Credentials& creds) {
-    std::string url = kApiBase + path;
-    std::unique_ptr<CURL, decltype(&curl_easy_cleanup)> curl(curl_easy_init(), &curl_easy_cleanup);
-    if (!curl) throw std::runtime_error("bricklink: curl init failed");
-
-    std::string body;
-    std::string auth = "Authorization: " + oauth_header("GET", url, creds);
-    struct curl_slist* headers = curl_slist_append(nullptr, auth.c_str());
-    curl_easy_setopt(curl.get(), CURLOPT_URL, url.c_str());
-    curl_easy_setopt(curl.get(), CURLOPT_HTTPHEADER, headers);
-    curl_easy_setopt(curl.get(), CURLOPT_WRITEFUNCTION, write_cb);
-    curl_easy_setopt(curl.get(), CURLOPT_WRITEDATA, &body);
-    curl_easy_setopt(curl.get(), CURLOPT_TIMEOUT, 15L);
-    curl_easy_setopt(curl.get(), CURLOPT_SSL_VERIFYPEER, 1L);
-    curl_easy_setopt(curl.get(), CURLOPT_SSL_VERIFYHOST, 2L);
-    CURLcode rc = curl_easy_perform(curl.get());
-    curl_slist_free_all(headers);
-    if (rc != CURLE_OK) {
-        throw std::runtime_error(std::string("bricklink: request failed: ") + curl_easy_strerror(rc));
+std::optional<size_t> column(const std::vector<std::string>& header, const std::string& name,
+                             bool prefix = false) {
+    for (size_t i = 0; i < header.size(); ++i) {
+        std::string h = lower_trim(header[i]);
+        if (prefix ? h.rfind(name, 0) == 0 : h == name) return i;
     }
-
-    auto json = crow::json::load(body);
-    if (!json || !json.has("meta")) throw std::runtime_error("bricklink: malformed response");
-    int code = json["meta"].has("code") ? static_cast<int>(json["meta"]["code"].i()) : 0;
-    if (code == 200) return json.has("data") ? json["data"] : crow::json::rvalue();
-    if (code == 400 || code == 404) return crow::json::rvalue();  // unknown element / item
-    auto text = [&](const char* key) {
-        return json["meta"].has(key) ? std::string(json["meta"][key].s()) : std::string();
-    };
-    throw ApiError("bricklink: " + text("message") + ": " + text("description") + " (code " +
-                   std::to_string(code) + ")");
+    return std::nullopt;
 }
 
-std::optional<double> parse_weight(const crow::json::rvalue& v) {
-    double w = 0;
+std::optional<double> parse_weight(const std::string& text) {
     try {
-        w = v.t() == crow::json::type::String ? std::stod(std::string(v.s())) : v.d();
+        size_t used = 0;
+        double w = std::stod(text, &used);
+        if (used > 0 && w > 0) return w;
     } catch (const std::exception&) {
-        return std::nullopt;
     }
-    if (w > 0) return w;
-    return std::nullopt;  // the catalog uses 0 for "unknown"
+    return std::nullopt;  // "?" = unknown
+}
+
+std::vector<std::string> files_in(const std::string& folder) {
+    std::vector<std::string> out;
+    if (DIR* dir = opendir(folder.c_str())) {
+        while (dirent* e = readdir(dir)) {
+            std::string path = folder + "/" + e->d_name;
+            struct stat st{};
+            if (e->d_name[0] != '.' && stat(path.c_str(), &st) == 0 && S_ISREG(st.st_mode)) {
+                out.push_back(path);
+            }
+        }
+        closedir(dir);
+    }
+    std::sort(out.begin(), out.end());
+    return out;
 }
 
 }  // namespace
 
-std::string oauth_header(const std::string& method, const std::string& url,
-                         const Credentials& creds, const std::map<std::string, std::string>& params,
-                         std::string nonce, std::string timestamp) {
-    if (nonce.empty()) nonce = crypto::random_hex_token(16);
-    if (timestamp.empty()) timestamp = std::to_string(std::time(nullptr));
-    std::map<std::string, std::string> oauth{
-        {"oauth_consumer_key", creds.consumer_key},
-        {"oauth_nonce", nonce},
-        {"oauth_signature_method", "HMAC-SHA1"},
-        {"oauth_timestamp", timestamp},
-        {"oauth_token", creds.token},
-        {"oauth_version", "1.0"},
-    };
+Catalog load(const std::string& folder) {
+    std::optional<std::map<std::string, std::optional<double>>> weights;
+    std::optional<std::map<std::string, std::pair<std::string, std::string>>> codes;
 
-    std::vector<std::pair<std::string, std::string>> pairs;
-    for (const auto& [k, v] : params) pairs.emplace_back(pct(k), pct(v));
-    for (const auto& [k, v] : oauth) pairs.emplace_back(pct(k), pct(v));
-    std::sort(pairs.begin(), pairs.end());
-    std::string param_str;
-    for (const auto& [k, v] : pairs) param_str += (param_str.empty() ? "" : "&") + k + "=" + v;
-
-    std::string base = method + "&" + pct(url) + "&" + pct(param_str);
-    std::string key = pct(creds.consumer_secret) + "&" + pct(creds.token_secret);
-    unsigned char digest[EVP_MAX_MD_SIZE];
-    unsigned int len = 0;
-    HMAC(EVP_sha1(), key.data(), static_cast<int>(key.size()),
-         reinterpret_cast<const unsigned char*>(base.data()), base.size(), digest, &len);
-    oauth["oauth_signature"] = crypto::base64_encode(std::vector<uint8_t>(digest, digest + len));
-
-    std::string header = "OAuth ";
-    bool first = true;
-    for (const auto& [k, v] : oauth) {
-        header += (first ? "" : ", ") + pct(k) + "=\"" + pct(v) + "\"";
-        first = false;
+    for (const std::string& path : files_in(folder)) {
+        std::ifstream in(path, std::ios::binary);
+        std::string line;
+        if (!std::getline(in, line)) continue;
+        auto header = split_tabs(line);
+        auto number = column(header, "number"), weight = column(header, "weight", true);
+        auto item = column(header, "item no"), color = column(header, "color"),
+             code = column(header, "code");
+        if (number && weight) {
+            weights.emplace();
+            while (std::getline(in, line)) {
+                auto r = split_tabs(line);
+                if (r.size() > std::max(*number, *weight)) (*weights)[r[*number]] = parse_weight(r[*weight]);
+            }
+        } else if (item && color && code) {
+            codes.emplace();
+            while (std::getline(in, line)) {
+                auto r = split_tabs(line);
+                if (r.size() > std::max({*item, *color, *code})) {
+                    codes->emplace(lower_trim(r[*code]), std::make_pair(r[*item], r[*color]));
+                }
+            }
+        }
     }
-    return header;
+
+    Catalog catalog;
+    if (!weights || !codes) return catalog;
+    for (const auto& [element, part_color] : *codes) {
+        auto w = weights->find(part_color.first);
+        catalog.emplace(element, PartInfo{part_color.first, part_color.second,
+                                          w == weights->end() ? std::nullopt : w->second});
+    }
+    return catalog;
 }
 
-PartInfo fetch(const std::string& element_id, const Credentials& creds) {
-    PartInfo info;
-    auto mappings = get("/item_mapping/" + pct(element_id), creds);
-    if (mappings.t() != crow::json::type::List) return info;
-    for (size_t i = 0; i < mappings.size(); ++i) {
-        const auto& m = mappings[i];
-        if (!m.has("item") || !m["item"].has("type") ||
-            std::string(m["item"]["type"].s()) != "PART") {
-            continue;
+std::shared_ptr<const Catalog> CatalogCache::get() {
+    std::string signature;
+    for (const std::string& path : files_in(folder_)) {
+        struct stat st{};
+        if (stat(path.c_str(), &st) == 0) {
+            signature += path + ":" + std::to_string(st.st_mtime) + ":" + std::to_string(st.st_size) + ";";
         }
-        info.part_no = std::string(m["item"]["no"].s());
-        if (m.has("color_name")) info.color = std::string(m["color_name"].s());
-        break;
     }
-    if (info.part_no.empty()) return info;
-
-    auto item = get("/items/PART/" + pct(info.part_no), creds);
-    if (item.t() == crow::json::type::Object && item.has("weight")) {
-        info.weight = parse_weight(item["weight"]);
+    std::lock_guard<std::mutex> lock(mu_);
+    if (signature != signature_) {
+        catalog_ = std::make_shared<const Catalog>(load(folder_));
+        signature_ = signature;
     }
-    return info;
+    return catalog_;
 }
 
 }  // namespace lugbulk::bricklink
