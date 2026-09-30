@@ -34,7 +34,7 @@ std::string cell(const Row& row, std::optional<size_t> idx) {
     return trim(row[*idx]);
 }
 
-// "232.45", "$232.45", "€1,234" — a person's running cost header cell.
+// "120.50", "$120.50", "€1,234" — a person's running cost header cell.
 bool is_number(const std::string& text) {
     static const std::regex kNumber(R"(^(\$|€|£)?\s*-?[\d,]*\.?\d+$)");
     return std::regex_match(trim(text), kNumber);
