@@ -110,7 +110,7 @@ jobs:
           # Reports the version it was built as.
           test "$(curl -fsS http://localhost:8080/version)" = "$VERSION"
           # An oversized request body is dropped, not buffered (Crow patch).
-          code="$(head -c 200000 /dev/zero | curl -s -o /dev/null -w '%{http_code}' \
+          code="$(head -c 200000 /dev/zero | curl -s -o /dev/null -w '%{http_code}' -H 'Expect:' \
             -X POST --data-binary @- http://localhost:8080/sheets || true)"
           test "$code" = 000
           # The dashboard is open to anyone (uploads); sign-in is offered.
@@ -123,8 +123,10 @@ jobs:
           echo "$check"
           grep -q '"labels":6' <<< "$check"
           # Uploads over 10 MB are dropped too.
-          code="$(head -c 11000000 /dev/zero | curl -s -o /dev/null -w '%{http_code}' \
+          # (Expect: off, or curl reports the server's "100 Continue" as the status)
+          code="$(head -c 11000000 /dev/zero | curl -s -o /dev/null -w '%{http_code}' -H 'Expect:' \
             -X POST --data-binary @- http://localhost:8080/upload/check || true)"
+          echo "oversized upload -> $code"
           test "$code" = 000
           # Runs as the unprivileged user, not root.
           docker top smoke -o pid,user,args
