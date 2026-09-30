@@ -63,6 +63,7 @@ add_library(lugbulk_core STATIC
     src/rate_limits.cpp
     src/samples.cpp
     src/spreadsheet.cpp
+    src/zip_writer.cpp
     src/pdf_text.cpp
 )
 

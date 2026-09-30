@@ -34,7 +34,7 @@ CREATE TABLE IF NOT EXISTS sheets (
 CREATE TABLE IF NOT EXISTS runs (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
     sheet_id      INTEGER NOT NULL REFERENCES sheets(id) ON DELETE CASCADE,
-    report_type   TEXT NOT NULL CHECK (report_type IN ('labels', 'lot_counts', 'parts', 'checklist')),
+    report_type   TEXT NOT NULL CHECK (report_type IN ('labels', 'lot_counts', 'parts', 'checklist', 'bundle')),
     generated_at  TEXT NOT NULL DEFAULT (datetime('now')),
     item_count    INTEGER NOT NULL,  -- labels, people, or parts, depending on report_type
     status        TEXT NOT NULL CHECK (status IN ('ok', 'error')),

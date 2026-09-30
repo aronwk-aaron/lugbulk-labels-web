@@ -49,6 +49,9 @@ address (e.g. `https://lugbulk.example.org`); it defaults to the origin of
   Labels, Checklist and Parts list downloads follow it. An **alignment
   test page** prints the stock's outlines on plain paper to check the
   printer first.
+- **Download all** — one `.zip` with the labels, packing checklist, parts
+  list and lot counts (PDF and CSV) and the sheet check, for a saved sheet
+  or an upload.
 - **Packing checklist** (PDF) — one page per person listing their parts
   with a tick box per bag.
 - **Label stock** — pick from 51 Avery (US-Letter and A4) and Dymo
@@ -305,6 +308,7 @@ or with the compose file: `LUGBULK_TAG=canary docker compose pull && docker comp
 | `src/image_backdrop.{h,cpp}` | Gray-tile treatment for trans/white part photos |
 | `src/bricklink.{h,cpp}` | Reads BrickLink's catalog download files: weights and colors |
 | `src/reports.{h,cpp}` | Lot counts and parts list, CSV + PDF |
+| `src/zip_writer.{h,cpp}` | Builds the "Download all" `.zip` in memory |
 | `src/spreadsheet.{h,cpp}` | Reads uploaded `.xlsx` (bounded unzip + SpreadsheetML) and `.csv` |
 | `src/pdf_text.{h,cpp}` | UTF-8 → WinAnsi for PDF text |
 | `tests/tests.cpp` | Unit tests (`ctest`) |

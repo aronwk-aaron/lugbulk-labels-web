@@ -17,6 +17,7 @@
 //   POST   /sheets/:id/parts    parts list (pieces + people per part), ?format=csv|pdf&order=
 //   GET    /sheets/:id/history  recent generate runs for a sheet (JSON)
 //   POST   /sheets/:id/checklist  packing checklist PDF
+//   POST   /sheets/:id/all      every report in one .zip ("Download all")
 //   GET    /sheets/:id/design   the sheet's saved label design (JSON)
 //   PUT    /sheets/:id/design   save it: {"spec","order","hide"}
 //   GET    /preview             one page of sample labels (?spec=&order=&hide=)
@@ -53,6 +54,7 @@
 #include "rate_limits.h"
 #include "samples.h"
 #include "spreadsheet.h"
+#include "zip_writer.h"
 #include "oauth.h"
 #include "ordering.h"
 #include "reports.h"
@@ -524,6 +526,38 @@ crow::response google_error(const std::exception& e) {
         }
     }
     return crow::response(502, "Couldn't reach Google Sheets — try again in a minute.");
+}
+
+// "Download all": every report for one run, in a single .zip — labels,
+// packing checklist, parts list and lot counts (PDF and CSV), plus the
+// sheet check as text. Consumes pivot.records.
+std::string build_bundle(PivotResult& pivot, const layout::LabelSpec& spec,
+                         ordering::PartOrder order, const labels_pdf::LabelOptions& options,
+                         const std::string& stem, const std::string& image_cache) {
+    const auto sort = reports::SortBy::kLastName;
+    auto parts = ordering::summarize_parts(pivot.records, order);
+    std::string lots_csv = reports::lot_counts_csv(pivot.records, sort);
+    auto lots_pdf = reports::lot_counts_pdf(pivot.records, sort);
+
+    std::string check = std::to_string(pivot.records.size()) + " labels\n";
+    if (pivot.issues.empty()) check += "No issues found.\n";
+    for (const auto& i : pivot.issues) {
+        check += "Row " + std::to_string(i.row) + " (" + i.kind + "): " + i.detail + "\n";
+    }
+
+    auto records = ordering::order_records(std::move(pivot.records), order);
+    auto as_str = [](const std::vector<uint8_t>& b) {
+        return std::string(reinterpret_cast<const char*>(b.data()), b.size());
+    };
+    return zip_writer::zip({
+        {stem + " labels.pdf", as_str(labels_pdf::build_labels_pdf(records, image_cache, spec, options))},
+        {stem + " packing checklist.pdf", as_str(reports::checklist_pdf(records))},
+        {stem + " parts.pdf", as_str(reports::parts_pdf(parts))},
+        {stem + " parts.csv", reports::parts_csv(parts)},
+        {stem + " lot counts.pdf", as_str(lots_pdf)},
+        {stem + " lot counts.csv", lots_csv},
+        {stem + " sheet check.txt", check},
+    });
 }
 
 std::string sheet_error_json(const PivotResult& pivot) {
@@ -1061,6 +1095,23 @@ int main() {
         });
 
     // Packing checklist: one page per person, in label order.
+    // Everything for the sheet in one .zip, in its saved design.
+    CROW_ROUTE(app, "/sheets/<int>/all").methods(crow::HTTPMethod::Post)(
+        [&](const crow::request& req, int64_t row_id) {
+            return generate(req, row_id, "bundle", [&](PivotResult& pivot, const SheetOwnership& sheet) {
+                std::string error;
+                auto design = resolve_design(db->get_design(sheet.sheet_id), req, &error);
+                if (!design) return std::make_pair(crow::response(400, error), 0);
+                int count = static_cast<int>(pivot.records.size());
+                std::string stem = safe_filename_stem(sheet.display_name);
+                return std::make_pair(
+                    attachment("application/zip", stem + " labels and reports.zip",
+                               build_bundle(pivot, *design->spec, design->order, design->options, stem,
+                                            cfg.data_dir + "/image_cache")),
+                    count);
+            });
+        });
+
     CROW_ROUTE(app, "/sheets/<int>/checklist").methods(crow::HTTPMethod::Post)(
         [&](const crow::request& req, int64_t row_id) {
             return generate(req, row_id, "checklist", [&](PivotResult& pivot, const SheetOwnership& sheet) {
@@ -1231,6 +1282,13 @@ int main() {
     };
     const std::string image_cache = cfg.data_dir + "/image_cache";
 
+    CROW_ROUTE(app, "/upload/all").methods(crow::HTTPMethod::Post)([&](const crow::request& req) {
+        return upload(req, Render{false, [&](PivotResult& pivot, const EffectiveDesign& d,
+                                             const std::string& stem) {
+            return attachment("application/zip", stem + " labels and reports.zip",
+                              build_bundle(pivot, *d.spec, d.order, d.options, stem, image_cache));
+        }});
+    });
     CROW_ROUTE(app, "/upload/check").methods(crow::HTTPMethod::Post)([&](const crow::request& req) {
         return upload(req, Render{true, [](PivotResult& pivot, const EffectiveDesign&, const std::string&) {
             crow::response res(200, sheet_error_json(pivot));
