@@ -96,7 +96,9 @@ jobs:
 
       # The browser code (static/js/) must match the C++ it ports: the build
       # above ran tests/golden.cpp on the fixtures; export what it wrote (all
-      # cache hits) and check the JavaScript gives the same results.
+      # cache hits) and check the JavaScript gives the same results. (What
+      # the retired C++ PDF/CSV/label code made is checked in instead:
+      # tests/js/golden/, read by the same tests.)
       - name: Export golden files
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
@@ -116,6 +118,26 @@ jobs:
         run: |
           ls golden
           node --test tests/js/*.test.mjs
+
+      # How much the image weighs, and what master's last published canary
+      # weighed (if it can be pulled), for reviewing changes that add or drop
+      # dependencies.
+      - name: Image size
+        run: |
+          size() { docker image inspect "$1" --format '{{.Size}}'; }
+          now="$(size lugbulk-labels-web:ci)"
+          echo "this build: $now bytes"
+          {
+            echo "### Image size"
+            echo "- this build: $((now / 1024 / 1024)) MiB ($now bytes)"
+          } >> "$GITHUB_STEP_SUMMARY"
+          if docker pull -q "$REGISTRY/$IMAGE_NAME:canary" > /dev/null 2>&1; then
+            before="$(size "$REGISTRY/$IMAGE_NAME:canary")"
+            echo "canary (master): $before bytes"
+            echo "- canary (master): $((before / 1024 / 1024)) MiB ($before bytes)" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "canary image not available to pull; no comparison"
+          fi
 
       - name: Smoke test the container
         env:
@@ -140,28 +162,26 @@ jobs:
           # (captured first: grep -q exiting early would fail the pipe under pipefail)
           page="$(curl -fsS http://localhost:8080/)"
           grep -q 'Sign in with Google' <<< "$page"
-          # An uploaded workbook is read and checked (no sign-in needed).
-          check="$(curl -fsS -X POST --data-binary @tests/fixtures/sample_order.xlsx \
-            -H 'Content-Type: application/octet-stream' http://localhost:8080/upload/check)"
-          echo "$check"
-          grep -q '"labels":6' <<< "$check"
-          # "Download all" returns a zip of every report.
-          curl -fsS -X POST --data-binary @tests/fixtures/sample_order.xlsx \
-            -H 'Content-Type: application/octet-stream' -o all.zip http://localhost:8080/upload/all
-          unzip -l all.zip
-          test "$(unzip -Z1 all.zip | wc -l)" = 7
+          # The server no longer reads uploads or makes PDFs/zips (the
+          # browser does): every route that did is gone.
+          for gone in /upload/check /upload/labels /upload/checklist /upload/parts /upload/lots \
+                      /upload/all /upload/preview /sheets/1/labels /sheets/1/checklist \
+                      /sheets/1/parts /sheets/1/lots /sheets/1/all /sheets/1/preview; do
+            code="$(curl -s -o /dev/null -w '%{http_code}' -X POST \
+              --data-binary @tests/fixtures/sample_order.xlsx \
+              -H 'Content-Type: application/octet-stream' "http://localhost:8080$gone")"
+            echo "POST $gone -> $code"
+            test "$code" = 404
+          done
+          for gone in /preview /test-page /sheets/1/check /sheets/1/labels /sheets/1/preview; do
+            code="$(curl -s -o /dev/null -w '%{http_code}' "http://localhost:8080$gone")"
+            echo "GET $gone -> $code"
+            test "$code" = 404
+          done
           # Privacy policy and terms (linked from Google's consent screen).
           curl -fsS http://localhost:8080/privacy | grep -q 'Limited Use'
           curl -fsS http://localhost:8080/terms | grep -q 'Terms of service'
-          # Live preview of the file's own labels: a PDF.
-          curl -fsS -X POST --data-binary @tests/fixtures/sample_order.xlsx \
-            -H 'Content-Type: application/octet-stream' -o preview.pdf \
-            'http://localhost:8080/upload/preview?spec=avery5162'
-          test "$(head -c 5 preview.pdf)" = '%PDF-'
-          check="$(curl -fsS -X POST --data-binary @tests/fixtures/sample_order.xlsx \
-            -H 'Content-Type: application/octet-stream' http://localhost:8080/upload/check)"
-          grep -q '"people":' <<< "$check"
-          # Browser-side renderer endpoints. BrickLink lookup: JSON (the CI
+          # Endpoints the browser-side renderer uses. BrickLink lookup: JSON (the CI
           # image has no BrickLink data, so {} is fine); a bad body is a 400.
           lookup="$(curl -fsS -X POST -H 'Content-Type: application/json' \
             --data '{"ids":["6225242","4211388"]}' http://localhost:8080/bricklink/lookup)"
@@ -200,9 +220,10 @@ jobs:
           grep -q 'export async function readXlsx' spreadsheet.js
           curl -fsS -o load.js http://localhost:8080/static/js/load.js
           grep -q 'export async function loadSheet' load.js
-          # The reports, their options and the zip writer the dashboard now
-          # uses, and the vendored pdf-lib they import (served unmodified).
-          for f in reports.js report_options.js printf.js zip.js vendor/pdf-lib.js; do
+          # The reports, their options, the zip writer and the font widths the
+          # dashboard uses, and the vendored pdf-lib they import (served
+          # unmodified).
+          for f in reports.js report_options.js printf.js zip.js afm.js vendor/pdf-lib.js; do
             curl -fsS -D mod.headers -o mod.js "http://localhost:8080/static/js/$f"
             echo "/static/js/$f -> $(wc -c < mod.js) bytes"
             grep -qi '^content-type: text/javascript' mod.headers
@@ -213,6 +234,9 @@ jobs:
           grep -qF "from './vendor/pdf-lib.js'" reports.js
           curl -fsS -o zip.js http://localhost:8080/static/js/zip.js
           grep -q 'export function zip' zip.js
+          curl -fsS -o afm.js http://localhost:8080/static/js/afm.js
+          grep -q 'export function helveticaMeasure' afm.js
+          grep -qF "from './afm.js'" reports.js
           curl -fsS -o pdf-lib.js http://localhost:8080/static/js/vendor/pdf-lib.js
           sha256sum pdf-lib.js
           test "$(sha256sum < pdf-lib.js | cut -d' ' -f1)" = 72c052d97b4d5d9fa6cdbdcb7ad709f03d4ddb1122390cb3afeba4d88651d969
@@ -278,11 +302,12 @@ jobs:
           # Raw sheet values need sign-in.
           code="$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8080/sheets/1/values)"
           test "$code" = 401
-          # Uploads over 10 MB are dropped too.
+          # There is no bigger body limit for a file any more (files are read
+          # in the browser): 11 MB to a route that exists is dropped too.
           # (Expect: off, or curl reports the server's "100 Continue" as the status)
           code="$(head -c 11000000 /dev/zero | curl -s -o /dev/null -w '%{http_code}' -H 'Expect:' \
-            -X POST --data-binary @- http://localhost:8080/upload/check || true)"
-          echo "oversized upload -> $code"
+            -X POST --data-binary @- http://localhost:8080/bricklink/lookup || true)"
+          echo "oversized body -> $code"
           test "$code" = 000
           # Runs as the unprivileged user, not root.
           docker top smoke -o pid,user,args

@@ -1,22 +1,23 @@
 // Label PDFs in the browser (static/js/labels.js, backdrop.js):
-//  - parity with the C++ server: the label layout (every text run, image,
-//    QR and swatch box, to within 0.01 pt), the QR matrices and the image
-//    backdrop pixels, from tests/golden.cpp's labels.json (GOLDEN_DIR);
+//  - the checked-in fixture tests/js/golden/labels.json: the label layout
+//    (every text run, image, QR and swatch box, to within 0.01 pt), the QR
+//    matrices and the image backdrop pixels. It was dumped from the C++
+//    server before that was retired; the layouts of labels with characters
+//    the old PoDoFo measurer got wrong (' ` é ë ñ ...) were regenerated from
+//    the JS with the AFM widths (afm.js; tests/js/golden/regenerate-labels.mjs);
 //  - the PDFs themselves: they load, have the right page count, contain
 //    all the text, and never cut long text off.
 // All records are invented.
 
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
 import { test } from 'node:test';
 
 import { PDFDocument, PDFRawStream, decodePDFRawStream } from '../../static/js/vendor/pdf-lib.js';
 import { backdropPixels } from '../../static/js/backdrop.js';
 import * as labels from '../../static/js/labels.js';
 
-const dir = process.env.GOLDEN_DIR;
-const skip = dir ? false : 'GOLDEN_DIR not set (see tests/golden.cpp)';
+const golden = () => JSON.parse(readFileSync(new URL('./golden/labels.json', import.meta.url), 'utf8'));
 const specsDoc = JSON.parse(readFileSync(new URL('../../data/label_specs.json', import.meta.url), 'utf8'));
 const specById = (id) => specsDoc.specs.find((s) => s.id === id);
 
@@ -28,8 +29,8 @@ function nearBox(a, b, what, keys) {
   for (const k of keys) near(a[k], b[k], `${what}.${k}`);
 }
 
-test('label layout matches C++ (labels.json)', { skip }, async () => {
-  const g = JSON.parse(readFileSync(join(dir, 'labels.json'), 'utf8'));
+test('label layout matches the fixture (labels.json)', async () => {
+  const g = golden();
   const measure = labels.helveticaMeasure;
   assert.ok(g.cases.length >= 100);
   for (const c of g.cases) {
@@ -52,16 +53,16 @@ test('label layout matches C++ (labels.json)', { skip }, async () => {
   }
 });
 
-test('QR matrices match C++', { skip }, () => {
-  const g = JSON.parse(readFileSync(join(dir, 'labels.json'), 'utf8'));
+test('QR matrices match the fixture', () => {
+  const g = golden();
   for (const q of g.qr) {
     const got = labels.qrMatrix(q.text).map((row) => row.map((b) => (b ? '1' : '0')).join(''));
     assert.deepEqual(got, q.rows, q.text);
   }
 });
 
-test('image backdrop pixels match C++', { skip }, () => {
-  const g = JSON.parse(readFileSync(join(dir, 'labels.json'), 'utf8'));
+test('image backdrop pixels match the fixture', () => {
+  const g = golden();
   for (const [i, c] of g.backdrop.entries()) {
     const out = backdropPixels(Buffer.from(c.pixels, 'hex'), c.width, c.height, c.trans, c.light);
     if (c.out === null) {

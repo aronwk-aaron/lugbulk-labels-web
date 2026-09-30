@@ -1,0 +1,98 @@
+{
+ "note": "Expected CSV reports and person ordering, dumped once from the C++ server before it was retired; the JS (static/js/reports.js, ordering.js) is the reference now.",
+ "people": [
+  "Ann Lee",
+  "ann lee",
+  "Bob Roe",
+  "Zed",
+  "Amy  Zhu",
+  "amy zhu",
+  "Émile Roe",
+  "Lee Ann",
+  "Bo \tRoe",
+  "x 😀",
+  "x ａ",
+  "O'Neil",
+  "de la Rosa Pat"
+ ],
+ "people_sorted": [
+  "Lee Ann",
+  "Ann Lee",
+  "ann lee",
+  "O'Neil",
+  "de la Rosa Pat",
+  "Bo \tRoe",
+  "Bob Roe",
+  "Émile Roe",
+  "Zed",
+  "Amy  Zhu",
+  "amy zhu",
+  "x ａ",
+  "x 😀"
+ ],
+ "cases": {
+  "generated-empty": {
+   "parts_csv": {
+    "heaviest": "order,element_id,description,lego_color,bl_color,total_pieces,people,grams_per_piece,weight_source\r\n",
+    "lightest": "order,element_id,description,lego_color,bl_color,total_pieces,people,grams_per_piece,weight_source\r\n",
+    "sheet": "order,element_id,description,lego_color,bl_color,total_pieces,people,grams_per_piece,weight_source\r\n"
+   },
+   "lots_csv_last": "person,lot_count,total_pieces\r\n",
+   "lots_csv_first": "person,lot_count,total_pieces\r\n"
+  },
+  "generated-no-tabs": {
+   "parts_csv": {
+    "heaviest": "order,element_id,description,lego_color,bl_color,total_pieces,people,grams_per_piece,weight_source\r\n",
+    "lightest": "order,element_id,description,lego_color,bl_color,total_pieces,people,grams_per_piece,weight_source\r\n",
+    "sheet": "order,element_id,description,lego_color,bl_color,total_pieces,people,grams_per_piece,weight_source\r\n"
+   },
+   "lots_csv_last": "person,lot_count,total_pieces\r\n",
+   "lots_csv_first": "person,lot_count,total_pieces\r\n"
+  },
+  "generated-report-edges": {
+   "parts_csv": {
+    "heaviest": "order,element_id,description,lego_color,bl_color,total_pieces,people,grams_per_piece,weight_source\r\n1,3001,BRICK 2X4,Bright Red,Red,2033.83,9,3.44,estimate\r\n2,300121,ROOF TILE 1X2X3/73°,Brick Yellow,Tan,2013.5,5,2.58,estimate\r\n3,3020,\"PLATE 2X4, \"\"GRILLE\"\"\",Bright Blue,Blue,2014.33,5,1.25,bricklink\r\n4,4000001,DUPLO BRICK 2X4,White,White,2025.83,7,1.25,bricklink\r\n5,4211388,BRICK 1X1X1 2/3,,Weird Pink,2015.83,5,0.53,bricklink\r\n6,6225242,\"'=HYPERLINK(\"\"x\"\")\",,,13.833,5,,\r\n",
+    "lightest": "order,element_id,description,lego_color,bl_color,total_pieces,people,grams_per_piece,weight_source\r\n1,4211388,BRICK 1X1X1 2/3,,Weird Pink,2015.83,5,0.53,bricklink\r\n2,3020,\"PLATE 2X4, \"\"GRILLE\"\"\",Bright Blue,Blue,2014.33,5,1.25,bricklink\r\n3,4000001,DUPLO BRICK 2X4,White,White,2025.83,7,1.25,bricklink\r\n4,300121,ROOF TILE 1X2X3/73°,Brick Yellow,Tan,2013.5,5,2.58,estimate\r\n5,3001,BRICK 2X4,Bright Red,Red,2033.83,9,3.44,estimate\r\n6,6225242,\"'=HYPERLINK(\"\"x\"\")\",,,13.833,5,,\r\n",
+    "sheet": "order,element_id,description,lego_color,bl_color,total_pieces,people,grams_per_piece,weight_source\r\n1,3001,BRICK 2X4,Bright Red,Red,2033.83,9,3.44,estimate\r\n2,3020,\"PLATE 2X4, \"\"GRILLE\"\"\",Bright Blue,Blue,2014.33,5,1.25,bricklink\r\n3,6225242,\"'=HYPERLINK(\"\"x\"\")\",,,13.833,5,,\r\n4,4211388,BRICK 1X1X1 2/3,,Weird Pink,2015.83,5,0.53,bricklink\r\n5,300121,ROOF TILE 1X2X3/73°,Brick Yellow,Tan,2013.5,5,2.58,estimate\r\n6,4000001,DUPLO BRICK 2X4,White,White,2025.83,7,1.25,bricklink\r\n"
+   },
+   "lots_csv_last": "person,lot_count,total_pieces\r\nCher,3,2012.33\r\n'=Evil Formula,2,2007\r\n\"Bo, Jr.\",4,18.5\r\n'+Plus Person,5,2010.83\r\n'-Minus Person,3,6.5\r\nWendy Quill,4,2015.33\r\nwendy quill,3,9.833\r\n'@At Sign,4,21\r\n\"Anna \"\"Quote\"\" Smith\",5,2004.83\r\nZoë Émile,3,11\r\n",
+   "lots_csv_first": "person,lot_count,total_pieces\r\n'+Plus Person,5,2010.83\r\n'-Minus Person,3,6.5\r\n'=Evil Formula,2,2007\r\n'@At Sign,4,21\r\n\"Anna \"\"Quote\"\" Smith\",5,2004.83\r\n\"Bo, Jr.\",4,18.5\r\nCher,3,2012.33\r\nWendy Quill,4,2015.33\r\nwendy quill,3,9.833\r\nZoë Émile,3,11\r\n"
+  },
+  "name_cost_pairs": {
+   "parts_csv": {
+    "heaviest": "order,element_id,description,lego_color,bl_color,total_pieces,people,grams_per_piece,weight_source\r\n1,3003,BRICK 2X2,Bright Red,Red,9,4,1.72,estimate\r\n2,3710,PLATE 1X4,Medium Stone Grey,Light Bluish Gray,10,1,1.25,bricklink\r\n3,87079,TILE 2X4,Dark Stone Grey,Dark Bluish Gray,3,1,1.15,estimate\r\n4,3004,BRICK 1X2,Transparent Red,Wrong BL,1,1,0.86,estimate\r\n5,6284071,SLOPE 45 2X1,,,3,1,0.86,estimate\r\n6,3068,TILE 2X2,,Weird Teal,2,1,0.57,bricklink\r\n7,6284070,SLOPE 45 2X2,,Weird Catalog Color,6,1,0.53,bricklink\r\n8,3023,PLATE 1X2,Sand Green,Sand Green,4,4,0.4,sheet\r\n",
+    "lightest": "order,element_id,description,lego_color,bl_color,total_pieces,people,grams_per_piece,weight_source\r\n1,3023,PLATE 1X2,Sand Green,Sand Green,4,4,0.4,sheet\r\n2,6284070,SLOPE 45 2X2,,Weird Catalog Color,6,1,0.53,bricklink\r\n3,3068,TILE 2X2,,Weird Teal,2,1,0.57,bricklink\r\n4,3004,BRICK 1X2,Transparent Red,Wrong BL,1,1,0.86,estimate\r\n5,6284071,SLOPE 45 2X1,,,3,1,0.86,estimate\r\n6,87079,TILE 2X4,Dark Stone Grey,Dark Bluish Gray,3,1,1.15,estimate\r\n7,3710,PLATE 1X4,Medium Stone Grey,Light Bluish Gray,10,1,1.25,bricklink\r\n8,3003,BRICK 2X2,Bright Red,Red,9,4,1.72,estimate\r\n",
+    "sheet": "order,element_id,description,lego_color,bl_color,total_pieces,people,grams_per_piece,weight_source\r\n1,3003,BRICK 2X2,Bright Red,Red,9,4,1.72,estimate\r\n2,3710,PLATE 1X4,Medium Stone Grey,Light Bluish Gray,10,1,1.25,bricklink\r\n3,87079,TILE 2X4,Dark Stone Grey,Dark Bluish Gray,3,1,1.15,estimate\r\n4,6284070,SLOPE 45 2X2,,Weird Catalog Color,6,1,0.53,bricklink\r\n5,3004,BRICK 1X2,Transparent Red,Wrong BL,1,1,0.86,estimate\r\n6,3023,PLATE 1X2,Sand Green,Sand Green,4,4,0.4,sheet\r\n7,6284071,SLOPE 45 2X1,,,3,1,0.86,estimate\r\n8,3068,TILE 2X2,,Weird Teal,2,1,0.57,bricklink\r\n"
+   },
+   "lots_csv_last": "person,lot_count,total_pieces\r\nEve,4,7\r\nCarol Jones,5,14\r\nDan O'Neil,3,14\r\nFrank de la Rosa,2,3\r\n",
+   "lots_csv_first": "person,lot_count,total_pieces\r\nCarol Jones,5,14\r\nDan O'Neil,3,14\r\nEve,4,7\r\nFrank de la Rosa,2,3\r\n"
+  },
+  "no_header": {
+   "parts_csv": {
+    "heaviest": "order,element_id,description,lego_color,bl_color,total_pieces,people,grams_per_piece,weight_source\r\n1,6225242,BRICK 1X2X5,Medium Stone Grey,Light Bluish Gray,7,2,4.3,estimate\r\n2,3002,BRICK 2X3,,,1,1,2.58,estimate\r\n3,3001,BRICK 2X4,Medium Stone Grey,MED. ST-GREY,2,1,1.25,bricklink\r\n",
+    "lightest": "order,element_id,description,lego_color,bl_color,total_pieces,people,grams_per_piece,weight_source\r\n1,3001,BRICK 2X4,Medium Stone Grey,MED. ST-GREY,2,1,1.25,bricklink\r\n2,3002,BRICK 2X3,,,1,1,2.58,estimate\r\n3,6225242,BRICK 1X2X5,Medium Stone Grey,Light Bluish Gray,7,2,4.3,estimate\r\n",
+    "sheet": "order,element_id,description,lego_color,bl_color,total_pieces,people,grams_per_piece,weight_source\r\n1,6225242,BRICK 1X2X5,Medium Stone Grey,Light Bluish Gray,7,2,4.3,estimate\r\n2,3001,BRICK 2X4,Medium Stone Grey,MED. ST-GREY,2,1,1.25,bricklink\r\n3,3002,BRICK 2X3,,,1,1,2.58,estimate\r\n"
+   },
+   "lots_csv_last": "person,lot_count,total_pieces\r\nHal Moss,2,6\r\nGina Park,2,4\r\n",
+   "lots_csv_first": "person,lot_count,total_pieces\r\nGina Park,2,4\r\nHal Moss,2,6\r\n"
+  },
+  "qty_marker": {
+   "parts_csv": {
+    "heaviest": "order,element_id,description,lego_color,bl_color,total_pieces,people,grams_per_piece,weight_source\r\n1,4000001,DUPLO BRICK 2X4,,,7,1,27.5,estimate\r\n2,6225242,BRICK 1X2X5,Medium Stone Grey,Light Bluish Gray,6,2,4.3,estimate\r\n3,3001,BRICK 2X4,Bright Red,Red,24,4,2.32,sheet\r\n4,3020,PLATE 2X4,Bright Blue,Blue,2001.5,2,1.25,bricklink\r\n5,300121,ROOF TILE 1X2X3/73°,Fancy Mauve,Light Bluish Gray,7,1,1.25,bricklink\r\n6,4000004,PLATE 1X2X2/3,Transparent,Trans-Clear,4,4,1.25,bricklink\r\n7,1234,4-digit id,Black,Black,1,1,1.25,bricklink\r\n8,4000012,SLOPE 2X2,Medium Stone Grey,Light Bluish Gray,2,1,1.25,bricklink\r\n9,4000007,brick 1 x 2 x 3,,,3,1,1.2,sheet\r\n10,4000005,BRICK 1X2,Medium Stone Grey,Light Bluish Gray,123,1,0.86,estimate\r\n11,4000010,PLATE 1X1,Earth Blue,Earth Blue,3,1,0.65,bricklink\r\n12,4000006,Plate 4x8,,Weird Catalog Color,2,1,0.61,bricklink\r\n13,4000011,TILE 2X2,Dark Stone Grey,Dark Stone Grey,0.5,1,0.573,estimate\r\n14,4000002,MINIFIG HEAD,Transparent,Trans-Clear,1005,2,0.57,bricklink\r\n15,4211388,BRICK 1X1X1 2/3,,Weird Catalog Color,1,1,0.53,bricklink\r\n16,4000009,BRICK 1X1,Transparent Red,TR.RED,24,4,0.43,estimate\r\n17,4000003,TILE 1X1,White,White,9.0072e+15,4,0.15,sheet\r\n18,98765,,,Weird Pink,2,1,,\r\n",
+    "lightest": "order,element_id,description,lego_color,bl_color,total_pieces,people,grams_per_piece,weight_source\r\n1,4000003,TILE 1X1,White,White,9.0072e+15,4,0.15,sheet\r\n2,4000009,BRICK 1X1,Transparent Red,TR.RED,24,4,0.43,estimate\r\n3,4211388,BRICK 1X1X1 2/3,,Weird Catalog Color,1,1,0.53,bricklink\r\n4,4000002,MINIFIG HEAD,Transparent,Trans-Clear,1005,2,0.57,bricklink\r\n5,4000011,TILE 2X2,Dark Stone Grey,Dark Stone Grey,0.5,1,0.573,estimate\r\n6,4000006,Plate 4x8,,Weird Catalog Color,2,1,0.61,bricklink\r\n7,4000010,PLATE 1X1,Earth Blue,Earth Blue,3,1,0.65,bricklink\r\n8,4000005,BRICK 1X2,Medium Stone Grey,Light Bluish Gray,123,1,0.86,estimate\r\n9,4000007,brick 1 x 2 x 3,,,3,1,1.2,sheet\r\n10,3020,PLATE 2X4,Bright Blue,Blue,2001.5,2,1.25,bricklink\r\n11,300121,ROOF TILE 1X2X3/73°,Fancy Mauve,Light Bluish Gray,7,1,1.25,bricklink\r\n12,4000004,PLATE 1X2X2/3,Transparent,Trans-Clear,4,4,1.25,bricklink\r\n13,1234,4-digit id,Black,Black,1,1,1.25,bricklink\r\n14,4000012,SLOPE 2X2,Medium Stone Grey,Light Bluish Gray,2,1,1.25,bricklink\r\n15,3001,BRICK 2X4,Bright Red,Red,24,4,2.32,sheet\r\n16,6225242,BRICK 1X2X5,Medium Stone Grey,Light Bluish Gray,6,2,4.3,estimate\r\n17,4000001,DUPLO BRICK 2X4,,,7,1,27.5,estimate\r\n18,98765,,,Weird Pink,2,1,,\r\n",
+    "sheet": "order,element_id,description,lego_color,bl_color,total_pieces,people,grams_per_piece,weight_source\r\n1,3001,BRICK 2X4,Bright Red,Red,24,4,2.32,sheet\r\n2,3020,PLATE 2X4,Bright Blue,Blue,2001.5,2,1.25,bricklink\r\n3,6225242,BRICK 1X2X5,Medium Stone Grey,Light Bluish Gray,6,2,4.3,estimate\r\n4,4211388,BRICK 1X1X1 2/3,,Weird Catalog Color,1,1,0.53,bricklink\r\n5,98765,,,Weird Pink,2,1,,\r\n6,300121,ROOF TILE 1X2X3/73°,Fancy Mauve,Light Bluish Gray,7,1,1.25,bricklink\r\n7,4000001,DUPLO BRICK 2X4,,,7,1,27.5,estimate\r\n8,4000002,MINIFIG HEAD,Transparent,Trans-Clear,1005,2,0.57,bricklink\r\n9,4000003,TILE 1X1,White,White,9.0072e+15,4,0.15,sheet\r\n10,4000004,PLATE 1X2X2/3,Transparent,Trans-Clear,4,4,1.25,bricklink\r\n11,4000005,BRICK 1X2,Medium Stone Grey,Light Bluish Gray,123,1,0.86,estimate\r\n12,4000006,Plate 4x8,,Weird Catalog Color,2,1,0.61,bricklink\r\n13,4000007,brick 1 x 2 x 3,,,3,1,1.2,sheet\r\n14,1234,4-digit id,Black,Black,1,1,1.25,bricklink\r\n15,4000009,BRICK 1X1,Transparent Red,TR.RED,24,4,0.43,estimate\r\n16,4000010,PLATE 1X1,Earth Blue,Earth Blue,3,1,0.65,bricklink\r\n17,4000011,TILE 2X2,Dark Stone Grey,Dark Stone Grey,0.5,1,0.573,estimate\r\n18,4000012,SLOPE 2X2,Medium Stone Grey,Light Bluish Gray,2,1,1.25,bricklink\r\n"
+   },
+   "lots_csv_last": "person,lot_count,total_pieces\r\nDan Adams,7,9.0072e+15\r\nBob Jones,8,25.25\r\nAlice Smith,12,3153.01\r\nCarol Smith,6,21\r\n",
+   "lots_csv_first": "person,lot_count,total_pieces\r\nAlice Smith,12,3153.01\r\nBob Jones,8,25.25\r\nCarol Smith,6,21\r\nDan Adams,7,9.0072e+15\r\n"
+  },
+  "sample_order": {
+   "parts_csv": {
+    "heaviest": "order,element_id,description,lego_color,bl_color,total_pieces,people,grams_per_piece,weight_source\r\n1,6097276,BASE PLATE 32X32,Bright Green,Bright Green,2,1,147,estimate\r\n2,6508677,\"BRICK 2X4, TRANSPARENT\",Transparent,Trans-Clear,25,1,1.25,bricklink\r\n3,4211388,BRICK 1X2,Medium Stone Grey,Light Bluish Gray,125,2,0.86,estimate\r\n4,6584302,FROG,Black,Black,100,2,0.53,bricklink\r\n",
+    "lightest": "order,element_id,description,lego_color,bl_color,total_pieces,people,grams_per_piece,weight_source\r\n1,6584302,FROG,Black,Black,100,2,0.53,bricklink\r\n2,4211388,BRICK 1X2,Medium Stone Grey,Light Bluish Gray,125,2,0.86,estimate\r\n3,6508677,\"BRICK 2X4, TRANSPARENT\",Transparent,Trans-Clear,25,1,1.25,bricklink\r\n4,6097276,BASE PLATE 32X32,Bright Green,Bright Green,2,1,147,estimate\r\n",
+    "sheet": "order,element_id,description,lego_color,bl_color,total_pieces,people,grams_per_piece,weight_source\r\n1,4211388,BRICK 1X2,Medium Stone Grey,Light Bluish Gray,125,2,0.86,estimate\r\n2,6508677,\"BRICK 2X4, TRANSPARENT\",Transparent,Trans-Clear,25,1,1.25,bricklink\r\n3,6097276,BASE PLATE 32X32,Bright Green,Bright Green,2,1,147,estimate\r\n4,6584302,FROG,Black,Black,100,2,0.53,bricklink\r\n"
+   },
+   "lots_csv_last": "person,lot_count,total_pieces\r\nAnn Lee,3,175\r\nBob Roe,3,77\r\n",
+   "lots_csv_first": "person,lot_count,total_pieces\r\nAnn Lee,3,175\r\nBob Roe,3,77\r\n"
+  }
+ }
+}

@@ -7,6 +7,10 @@
 //
 // Without GOLDEN_DIR the parity tests are skipped (the unit tests in
 // unit.test.mjs still run); in CI it is always set.
+//
+// What the C++ no longer makes (the CSV reports, how people sort in reports)
+// is checked against tests/js/golden/reports.json, dumped from the C++ once
+// before it was retired; labels.json there is checked by labels.test.mjs.
 
 import assert from 'node:assert/strict';
 import { readdirSync, readFileSync } from 'node:fs';
@@ -31,6 +35,7 @@ const load = (name) => JSON.parse(readFileSync(join(dir, name), 'utf8'));
 const withoutImage = (rs) => rs.map(({ image_url, ...r }) => r);
 
 const fixtures = new URL('../fixtures/', import.meta.url);
+const expectedReports = JSON.parse(readFileSync(new URL('./golden/reports.json', import.meta.url), 'utf8'));
 
 const cases = dir ? readdirSync(dir).filter((f) => /^case-.*\.json$/.test(f)).sort() : [];
 
@@ -40,8 +45,9 @@ test('golden files are present', { skip }, () => {
 });
 
 for (const file of cases) {
-  test(`pivot + records + ordering match C++: ${file}`, { skip }, () => {
+  test(`pivot + records + ordering match C++, reports match the fixture: ${file}`, { skip }, () => {
     const g = load(file);
+    const want_reports = expectedReports.cases[file.replace(/^case-|\.json$/g, '')];
 
     // pivot_tabs without the size check.
     let p = { records: [], issues: [] };
@@ -53,6 +59,7 @@ for (const file of cases) {
     assert.deepEqual(canon({ ...p, records: withoutImage(p.records) }), canon(g.pivot));
 
     if (g.too_big !== null) {
+      assert.equal(want_reports, undefined);
       assert.throws(() => records.pivotTabs(g.tabs), (e) => {
         assert.ok(e instanceof records.TooBigError);
         assert.equal(e.message, g.too_big);
@@ -79,15 +86,21 @@ for (const file of cases) {
         `summarize_parts ${order}`,
       );
       // CSV reports: byte for byte.
-      assert.equal(reports.partsCsv(ordering.summarizeParts(applied.records, order)), want.parts_csv, `parts_csv ${order}`);
-      assert.equal(reports.reportCsv('parts', applied.records, null, order), want.parts_csv, `reportCsv parts ${order}`);
+      const parts_csv = want_reports.parts_csv[order];
+      assert.equal(reports.partsCsv(ordering.summarizeParts(applied.records, order)), parts_csv, `parts_csv ${order}`);
+      assert.equal(reports.reportCsv('parts', applied.records, null, order), parts_csv, `reportCsv parts ${order}`);
     }
-    assert.equal(reports.lotCountsCsv(applied.records, 'last'), g.reports.lots_csv_last, 'lot_counts_csv last');
-    assert.equal(reports.lotCountsCsv(applied.records, 'first'), g.reports.lots_csv_first, 'lot_counts_csv first');
-    assert.equal(reports.reportCsv('lots', applied.records, null), g.reports.lots_csv_last, 'reportCsv lots');
+    assert.equal(reports.lotCountsCsv(applied.records, 'last'), want_reports.lots_csv_last, 'lot_counts_csv last');
+    assert.equal(reports.lotCountsCsv(applied.records, 'first'), want_reports.lots_csv_first, 'lot_counts_csv first');
+    assert.equal(reports.reportCsv('lots', applied.records, null), want_reports.lots_csv_last, 'reportCsv lots');
     assert.equal(reports.sheetCheckText(applied), g.reports.check_text, 'sheet check text');
   });
 }
+
+test('how people sort matches the fixture (reports.json)', () => {
+  assert.ok(expectedReports.people.length >= 10);
+  assert.deepEqual([...expectedReports.people].sort(ordering.comparePeople), expectedReports.people_sorted);
+});
 
 test('colors, parse_qty, element ids, weights, names, label specs match C++', { skip }, () => {
   const u = load('units.json');
@@ -133,8 +146,6 @@ test('colors, parse_qty, element ids, weights, names, label specs match C++', { 
   for (const [desc, want] of u.estimate_weight) {
     assert.deepEqual(canon(ordering.estimateWeight(desc)), canon(want), `estimateWeight(${JSON.stringify(desc)})`);
   }
-
-  assert.deepEqual([...u.people].sort(ordering.comparePeople), u.people_sorted);
 
   const find = layout.labelSpecFinder(u.label_specs);
   for (const [name, want] of u.label_spec_lookups) {

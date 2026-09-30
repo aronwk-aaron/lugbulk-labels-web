@@ -19,32 +19,11 @@ set(CROW_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
 set(CROW_BUILD_TESTS OFF CACHE BOOL "" FORCE)
 FetchContent_MakeAvailable(Crow)
 
-# --- QR codes on labels: Nayuki's QR Code generator (MIT), C++ port ---
-FetchContent_Declare(
-    qrcodegen
-    GIT_REPOSITORY https://github.com/nayuki/QR-Code-generator.git
-    GIT_TAG 720f62bddb7226106071d4728c292cb1df519ceb  # v1.8.0 (pinned by commit)
-)
-FetchContent_MakeAvailable(qrcodegen)  # no CMakeLists of its own: just fetched; built below
-add_library(qrcodegen STATIC ${qrcodegen_SOURCE_DIR}/cpp/qrcodegen.cpp)
-target_include_directories(qrcodegen PUBLIC ${qrcodegen_SOURCE_DIR}/cpp)
-
 find_package(Threads REQUIRED)
 find_package(OpenSSL REQUIRED)      # OAuth token exchange (HTTPS client) + Crow SSL support
 find_package(SQLite3 REQUIRED)      # sessions / users / sheets / run log
 find_package(CURL REQUIRED)         # outbound HTTPS to Google (OAuth + Sheets API)
-find_package(JPEG REQUIRED)         # decoding trans-part photos to outline them
-find_package(ZLIB REQUIRED)         # unpacking uploaded .xlsx workbooks
-
-# --- PDF library: PoDoFo ---
-# No upstream CMake config on Debian (libpodofo-dev), so locate by hand.
-# Chosen over libharu because libharu isn't packaged for Debian bookworm
-# (our Docker base) — building it from source isn't worth it here.
-find_path(PODOFO_INCLUDE_DIR podofo/podofo.h)
-find_library(PODOFO_LIBRARY NAMES podofo)
-if(NOT PODOFO_INCLUDE_DIR OR NOT PODOFO_LIBRARY)
-    message(FATAL_ERROR "PoDoFo (podofo/podofo.h / libpodofo) not found — install libpodofo-dev")
-endif()
+find_package(ZLIB REQUIRED)         # unpacking .xlsx workbooks (spreadsheet.cpp, the parity reference)
 
 # Everything but main(), shared by the server and the tests.
 add_library(lugbulk_core STATIC
@@ -53,26 +32,19 @@ add_library(lugbulk_core STATIC
     src/colors.cpp
     src/crypto.cpp
     src/db.cpp
-    src/image_backdrop.cpp
     src/oauth.cpp
     src/ordering.cpp
     src/sheet_layout.cpp
     src/sheet_pivot.cpp
     src/records.cpp
-    src/reports.cpp
-    src/labels_pdf.cpp
     src/rate_limits.cpp
-    src/samples.cpp
     src/spreadsheet.cpp
-    src/zip_writer.cpp
     src/json_check.cpp
-    src/pdf_text.cpp
+    src/label_options.cpp
+    src/part_images.cpp
 )
 
-target_include_directories(lugbulk_core PUBLIC
-    src
-    ${PODOFO_INCLUDE_DIR}
-)
+target_include_directories(lugbulk_core PUBLIC src)
 
 target_link_libraries(lugbulk_core PUBLIC
     Crow::Crow
@@ -81,10 +53,7 @@ target_link_libraries(lugbulk_core PUBLIC
     OpenSSL::Crypto
     SQLite::SQLite3
     CURL::libcurl
-    JPEG::JPEG
     ZLIB::ZLIB
-    qrcodegen
-    ${PODOFO_LIBRARY}
 )
 
 add_executable(lugbulk_labels_web src/main.cpp)
@@ -102,7 +71,7 @@ if(LUGBULK_BUILD_TESTS)
     target_link_libraries(lugbulk_tests PRIVATE lugbulk_core)
     add_test(NAME lugbulk_tests COMMAND lugbulk_tests)
 
-    # Golden JSON for the browser port's parity test (tests/js/): run as
+    # Golden JSON for the browser code's parity test (tests/js/): run as
     # `lugbulk_golden <dir>`; the Docker build writes build/golden.
     add_executable(lugbulk_golden tests/golden.cpp)
     target_compile_definitions(lugbulk_golden PRIVATE

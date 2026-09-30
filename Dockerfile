@@ -3,14 +3,15 @@ FROM debian:bookworm-slim AS build
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential cmake git ca-certificates \
-    libssl-dev libsqlite3-dev libcurl4-openssl-dev libpodofo-dev libasio-dev libjpeg-dev zlib1g-dev \
+    libssl-dev libsqlite3-dev libcurl4-openssl-dev libasio-dev zlib1g-dev \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /src
 COPY . .
 
 # Unit tests run as part of the build: a failing test fails the image.
-# Also writes the golden files the browser code is checked against.
+# Also writes the golden files the browser code is checked against
+# (alongside the checked-in ones in tests/js/golden/).
 RUN cmake -B build -DCMAKE_BUILD_TYPE=Release \
     && cmake --build build -j"$(nproc)" \
     && ctest --test-dir build --output-on-failure \
@@ -28,7 +29,7 @@ ARG VERSION=dev
 ENV LUGBULK_VERSION=$VERSION
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    ca-certificates curl libssl3 libsqlite3-0 libcurl4 libpodofo0.9.8 libjpeg62-turbo \
+    ca-certificates curl libssl3 libsqlite3-0 libcurl4 \
     && rm -rf /var/lib/apt/lists/* \
     && useradd --system --uid 10001 --home-dir /app --shell /usr/sbin/nologin lugbulk \
     && mkdir -p /data && chown lugbulk:lugbulk /data
