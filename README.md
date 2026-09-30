@@ -52,6 +52,19 @@ can still open sheets already in their list.
   Labels, Checklist and Parts list downloads follow it. An **alignment
   test page** prints the stock's outlines on plain paper to check the
   printer first.
+- **Keep each part on one sheet** (stocks with more than one label per
+  sheet) — *Off* (default) lets the labels run on continuously, so a part
+  can run over onto the next sheet; *Optimize* packs whole parts onto
+  sheets so none is split, using the fewest sheets possible (this is bin
+  packing, solved exactly in the Web Worker within about a second; if that
+  isn't enough the best packing found is used and marked "not proven
+  optimal"). Blank labels are left empty; a part bigger than one sheet
+  fills whole sheets and only its remainder is packed. Among the packings
+  with the fewest sheets it keeps closest to the part order (sheets in
+  order of their first part, parts in order within a sheet). The design
+  shows sheets, blank labels and split parts for both; the packed order is
+  also what "Same as the labels" means in the checklist and parts list.
+  Saved with the design (`keep_parts`: `off` | `optimize`).
 - **Download** — tick the files you want: labels, packing checklist, parts
   list and lot counts (PDF and CSV) and the sheet check. One file downloads
   as it is; several come in one `.zip`. Everything — labels, reports and
@@ -352,6 +365,7 @@ or with the compose file: `LUGBULK_TAG=canary docker compose pull && docker comp
 | `src/ordering.{h,cpp}` | Part weight estimates, label order, "N of M" numbering, per-part summaries |
 | `src/label_options.{h,cpp}` | Which label parts a saved design switches on or off (validates `PUT /sheets/:id/design`) |
 | `src/part_images.{h,cpp}` | The shared part-photo cache behind `/img/<id>.jpg` |
+| `static/js/packing.js` | "Keep each part on one sheet": exact bin packing of parts onto sheets (bounds, bin completion over size counts, closest-to-order tie-break, time box); run in the labels worker; `tests/js/packing.test.mjs` |
 | `static/js/labels.js`, `backdrop.js`, `labels_worker.js`, `afm.js` | Label PDFs in the browser (pdf-lib, Nayuki's qrcodegen), the gray tile behind light parts, the Web Worker that runs them, and the Helvetica widths (Adobe AFM, by WinAnsi code) labels and reports measure text with; checked by `tests/js/labels.test.mjs`, `afm.test.mjs` |
 | `src/bricklink.{h,cpp}` | Reads BrickLink's catalog download files: weights and colors |
 | `src/json_check.{h,cpp}` | Strict JSON check for the report options saved with a sheet's design |

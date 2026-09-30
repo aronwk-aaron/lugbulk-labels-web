@@ -70,6 +70,10 @@ CREATE TABLE IF NOT EXISTS sheet_designs (
     -- file choices: a JSON object (at most 4 KB) stored as the browser sent
     -- it, NULL if never saved. Db::migrate() adds it to older databases.
     report_options  TEXT,
+    -- "Keep each part on one sheet": 'off' (labels run on continuously) or
+    -- 'optimize' (packed so no part is split, static/js/packing.js).
+    -- Db::migrate() adds it to older databases.
+    keep_parts      TEXT NOT NULL DEFAULT 'off' CHECK (keep_parts IN ('off', 'optimize')),
     updated_by     INTEGER REFERENCES users(id) ON DELETE SET NULL,
     updated_at      TEXT NOT NULL DEFAULT (datetime('now'))
 );

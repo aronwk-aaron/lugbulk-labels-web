@@ -43,4 +43,7 @@ private:
     std::array<bool, kLabelPartNames.size()> hidden_{};
 };
 
+// "Keep each part on one sheet": "off" or "optimize" (static/js/packing.js).
+bool keep_parts_valid(std::string_view value);
+
 }  // namespace lugbulk::labels

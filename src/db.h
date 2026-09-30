@@ -41,6 +41,10 @@ struct Design {
     // json_check::report_options_error first); "" if none saved. On
     // put_design, nullopt keeps what's stored.
     std::optional<std::string> report_options;
+    // "off" | "optimize" (labels::keep_parts_valid): keep each part on one
+    // sheet. get_design always fills it in ("off" for a design saved before
+    // the option); on put_design, nullopt keeps what's stored.
+    std::optional<std::string> keep_parts;
 };
 
 // One row of the run history log.
