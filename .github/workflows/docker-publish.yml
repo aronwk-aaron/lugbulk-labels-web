@@ -78,7 +78,8 @@ jobs:
           test "$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8080/)" = 302
           # Runs as the unprivileged user, not root.
           docker top smoke -o pid,user,args
-          test "$(docker top smoke -o pid,user | tail -n +2 | awk '{print $2}' | sort -u)" = lugbulk
+          # (the host has no name for the container's uid 10001, so ps may show either)
+          ! docker top smoke -o pid,user | tail -n +2 | awk '{print $2}' | grep -vxE 'lugbulk|10001'
 
       - name: Container logs
         if: always()
