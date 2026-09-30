@@ -634,6 +634,8 @@ async function loadSavedSheets() {
       // Labels, checklist and parts list follow the sheet's saved design.
       const labelsBtn = downloadButton('Labels', 'Generating labels… (can take a minute)',
         () => base + '/labels', () => sheet.display_name + ' labels.pdf');
+      const allBtn = downloadButton('Download all (.zip)', 'Making labels and every report… (can take a minute)',
+        () => base + '/all', () => sheet.display_name + ' labels and reports.zip');
       const checklistBtn = downloadButton('Checklist', 'Generating packing checklist…',
         () => base + '/checklist', () => sheet.display_name + ' packing checklist.pdf');
       const partsBtn = downloadButton('Parts list', 'Generating parts list…',
@@ -661,7 +663,7 @@ async function loadSavedSheets() {
       labelsBtn.classList.add('primary');
       delBtn.classList.add('danger');
       const actions = el('div', { class: 'actions' },
-        [labelsBtn, designBtn, checklistBtn, partsBtn, lotsBtn, checkBtn, el('span', { class: 'spacer' }), delBtn]);
+        [labelsBtn, allBtn, designBtn, checklistBtn, partsBtn, lotsBtn, checkBtn, el('span', { class: 'spacer' }), delBtn]);
       list.appendChild(el('li', { class: 'sheet' }, [
         el('div', { class: 'sheet-head' }, [nameSpan, historySpan]),
         statusSpan,
@@ -763,6 +765,8 @@ function uploadRequest(file) {
     setStatus('');
   }, label === 'Labels');
   download('Labels', 'Making labels… (can take a minute)', () => '/upload/labels?' + designQuery(), () => ' labels.pdf');
+  download('Download all (.zip)', 'Making labels and every report… (can take a minute)',
+           () => '/upload/all?' + designQuery(), () => ' labels and reports.zip');
   add('Design', async () => openDesign(null));
   download('Checklist', 'Making packing checklist…', () => '/upload/checklist?' + designQuery(), () => ' packing checklist.pdf');
   download('Parts list', 'Making parts list…',

@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <fstream>
 #include <functional>
 #include <iostream>
@@ -24,6 +25,7 @@
 #include "db.h"
 #include "samples.h"
 #include "spreadsheet.h"
+#include "zip_writer.h"
 #include "ordering.h"
 #include "reports.h"
 #include "sheet_layout.h"
@@ -495,6 +497,27 @@ void test_spreadsheet_uploads() {
     CHECK(garbage);
 }
 
+void test_zip_writer() {
+    std::string zip = zip_writer::zip({{"a labels.pdf", "%PDF-1.4 hello"}, {"b.csv", "x,y\r\n"}});
+    CHECK(zip.rfind("PK\x03\x04", 0) == 0);
+    // End of central directory: 2 entries.
+    size_t eocd = zip.rfind("PK\x05\x06");
+    CHECK(eocd != std::string::npos && eocd + 22 == zip.size());
+    CHECK(static_cast<unsigned char>(zip[eocd + 10]) == 2);
+    // The stored bytes and names are there, and a real unzip agrees.
+    CHECK(zip.find("%PDF-1.4 hello") != std::string::npos && zip.find("b.csv") != std::string::npos);
+    char path[] = "/tmp/lugbulk_zip_XXXXXX";
+    int fd = mkstemp(path);
+    CHECK(fd >= 0);
+    if (fd >= 0) {
+        CHECK(write(fd, zip.data(), zip.size()) == static_cast<ssize_t>(zip.size()));
+        close(fd);
+        std::string cmd = std::string("unzip -tq ") + path + " >/dev/null 2>&1";
+        if (std::system("command -v unzip >/dev/null 2>&1") == 0) CHECK(std::system(cmd.c_str()) == 0);
+        std::remove(path);
+    }
+}
+
 int main() {
     layout::load_label_specs(LUGBULK_LABEL_SPECS_PATH);
     const std::pair<const char*, std::function<void()>> tests[] = {
@@ -511,6 +534,7 @@ int main() {
         {"placeholder_color_and_catalog_weight", test_placeholder_color_and_catalog_weight},
         {"label_specs", test_label_specs},
         {"spreadsheet_uploads", test_spreadsheet_uploads},
+        {"zip_writer", test_zip_writer},
         {"rate_limits", test_rate_limits},
         {"label_options_and_extras", test_label_options_and_extras},
         {"design_storage", test_design_storage},

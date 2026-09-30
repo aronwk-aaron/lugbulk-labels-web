@@ -161,16 +161,16 @@ void Db::migrate() {
         Stmt s(db_, "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'runs';");
         if (s.step()) runs_sql = s.column_text(0);
     }
-    // Older runs.report_type CHECKs lacked 'parts' / 'checklist'. SQLite
+    // Older runs.report_type CHECKs lacked 'parts' / 'checklist' / 'bundle'. SQLite
     // can't alter a CHECK constraint, so rebuild the table.
-    if (!runs_sql.empty() && runs_sql.find("'checklist'") == std::string::npos) {
+    if (!runs_sql.empty() && runs_sql.find("'bundle'") == std::string::npos) {
         const char* sql =
             "BEGIN;"
             "CREATE TABLE runs_new ("
             "  id INTEGER PRIMARY KEY AUTOINCREMENT,"
             "  sheet_id INTEGER NOT NULL REFERENCES sheets(id) ON DELETE CASCADE,"
             "  report_type TEXT NOT NULL CHECK (report_type IN ('labels', 'lot_counts', 'parts', "
-            "'checklist')),"
+            "'checklist', 'bundle')),"
             "  generated_at TEXT NOT NULL DEFAULT (datetime('now')),"
             "  item_count INTEGER NOT NULL,"
             "  status TEXT NOT NULL CHECK (status IN ('ok', 'error')),"
