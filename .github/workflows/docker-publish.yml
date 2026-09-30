@@ -79,7 +79,10 @@ jobs:
           # Runs as the unprivileged user, not root.
           docker top smoke -o pid,user,args
           # (the host has no name for the container's uid 10001, so ps may show either)
-          ! docker top smoke -o pid,user | tail -n +2 | awk '{print $2}' | grep -vxE 'lugbulk|10001'
+          if docker top smoke -o pid,user | tail -n +2 | awk '{print $2}' | grep -vxE 'lugbulk|10001'; then
+            echo "container has processes running as another user" >&2
+            exit 1
+          fi
 
       - name: Container logs
         if: always()
