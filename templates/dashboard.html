@@ -9,6 +9,7 @@
   body { font-family: system-ui, sans-serif; max-width: 640px; margin: 2rem auto; padding: 0 1rem; }
   header { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 1.5rem; }
   h1 { font-size: 1.25rem; margin: 0; }
+  h1 .meta { font-size: 0.75rem; color: #888; font-weight: normal; }
   #whoami { color: #666; font-size: 0.9rem; }
   section { margin-bottom: 2rem; }
   h2 { font-size: 1rem; margin-bottom: 0.5rem; }
@@ -37,7 +38,7 @@
 </head>
 <body>
 <header>
-  <h1>lugbulk-labels-web</h1>
+  <h1>lugbulk-labels-web <span class="meta" title="build version">{{version}}</span></h1>
   <span>
     <span id="whoami">{{email}}</span>
     <form id="logout" method="post" action="/auth/logout">

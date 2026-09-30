@@ -3,6 +3,7 @@
 // Routes so far:
 //   GET    /                    dashboard HTML, mustache-rendered (redirects to /auth/login if not logged in)
 //   GET    /healthz             liveness check
+//   GET    /version             build version (release, canary-<sha>, or dev)
 //   GET    /auth/login          kick off Google OAuth
 //   GET    /auth/callback       OAuth redirect target, stores refresh token
 //   POST   /auth/logout         clears the session
@@ -412,7 +413,13 @@ int main() {
         return crow::response(200, "ok");
     });
 
-    CROW_ROUTE(app, "/")([&](const crow::request& req) {
+    // Which build is running: "1.2.0" for a release, "canary-<sha>" for a
+    // build of the head of master, "dev" for a local build. Baked into the
+    // image by the Dockerfile's VERSION build arg.
+    const std::string version = std::getenv("LUGBULK_VERSION") ? std::getenv("LUGBULK_VERSION") : "dev";
+    CROW_ROUTE(app, "/version")([version]() { return crow::response(200, version); });
+
+    CROW_ROUTE(app, "/")([&, version](const crow::request& req) {
         auto user = current_user(*db, req);
         if (!user) {
             crow::response res(302);
@@ -424,6 +431,7 @@ int main() {
         auto tmpl = crow::mustache::load("dashboard.html");
         crow::mustache::context ctx;
         ctx["email"] = user->email;
+        ctx["version"] = version;
         // Label stock picker: one <optgroup> per brand + page size.
         std::vector<crow::json::wvalue> groups;
         std::vector<crow::json::wvalue> options;

@@ -17,6 +17,10 @@ RUN cmake -B build -DCMAKE_BUILD_TYPE=Release \
 # --- Runtime stage ---
 FROM debian:bookworm-slim
 
+# Set by CI: the release version, or canary-<sha> for the head of master.
+ARG VERSION=dev
+ENV LUGBULK_VERSION=$VERSION
+
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates curl libssl3 libsqlite3-0 libcurl4 libpodofo0.9.8 libjpeg62-turbo \
     && rm -rf /var/lib/apt/lists/* \
