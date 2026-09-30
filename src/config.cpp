@@ -44,6 +44,8 @@ Config Config::load_from_env() {
     }
     cfg.google_redirect_uri =
         optional_env("GOOGLE_OAUTH_REDIRECT_URI", "http://localhost:8080/auth/callback");
+    cfg.google_api_key = optional_env("GOOGLE_API_KEY", "");
+    cfg.google_app_id = optional_env("GOOGLE_APP_ID", "");
     cfg.token_encryption_key_b64 = cfg.google_enabled() ? require_env("TOKEN_ENCRYPTION_KEY")
                                                         : optional_env("TOKEN_ENCRYPTION_KEY", "");
     cfg.data_dir = optional_env("LUGBULK_DATA_DIR", ".");

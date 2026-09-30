@@ -1,8 +1,8 @@
 // Google OAuth 2.0 authorization-code flow (with offline access, so we get
 // a refresh token) + fetching the logged-in user's stable id/email.
 //
-// Only the Sheets read-only scope + basic profile are requested — no scope
-// grants write access or anything beyond what the app needs.
+// Only basic profile + drive.file are requested: drive.file reaches just the
+// files the user picks for this app with the Google Picker.
 #pragma once
 
 #include <cstdint>
@@ -27,18 +27,19 @@ struct TokenResponse {
     std::string access_token;
     std::string refresh_token;  // empty if Google didn't issue a new one
     int expires_in = 0;
+    std::string scope;  // space-separated scopes granted (refresh grant only)
 };
+
+// The per-file Drive scope the app signs in with.
+inline constexpr const char* kDriveFileScope = "https://www.googleapis.com/auth/drive.file";
+
+// Whether a space-separated OAuth `scope` string includes `wanted`.
+bool has_scope(const std::string& scopes, const std::string& wanted);
 
 struct UserInfo {
     bool email_verified = false;
     std::string sub;    // stable Google account id
     std::string email;
-};
-
-struct SheetFile {
-    std::string id;             // Drive file id == Sheets spreadsheet id
-    std::string name;
-    std::string modified_time;  // RFC3339, as returned by Drive
 };
 
 // Builds the URL to redirect the browser to. `state` must be a
@@ -61,16 +62,6 @@ TokenResponse refresh_access_token(const Config& cfg, const std::string& refresh
 
 // Calls Google's userinfo endpoint with a valid access token.
 UserInfo fetch_userinfo(const std::string& access_token);
-
-// Lists Google Sheets files the user can access, via the Drive API,
-// restricted to non-trashed spreadsheets and (via drive.metadata.readonly)
-// metadata only — file contents are never fetched through this call.
-// `query` is an optional case-insensitive substring filter on file name;
-// empty returns the user's most-recently-modified spreadsheets. Results
-// are capped at `limit` (Drive API pageSize; no pagination — a "search and
-// pick" UI doesn't need the user's entire Drive enumerated).
-std::vector<SheetFile> list_spreadsheets(const std::string& access_token,
-                                          const std::string& query, int limit = 25);
 
 // Fetches the raw cell values of `range` (e.g. "'Order Here'!A1:CT") from a
 // spreadsheet via the Sheets API, read-only (spreadsheets.values.get —

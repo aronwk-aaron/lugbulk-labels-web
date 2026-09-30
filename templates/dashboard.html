@@ -110,14 +110,7 @@
   .sheet.current { background: var(--accent-soft); }
   .sheet .file { flex: 1; min-width: 0; display: flex; flex-direction: column; }
   .sheet-name { font-weight: 600; overflow-wrap: anywhere; }
-  details.find { margin-top: 0.75rem; }
-  details.find summary { cursor: pointer; color: var(--accent); font-size: 0.9rem; }
-  .search-row { display: flex; gap: 0.5rem; margin: 0.6rem 0; }
-  .search-row input { flex: 1; }
-  .result { display: flex; justify-content: space-between; align-items: center; gap: 0.75rem;
-            padding: 0.5rem 0; border-top: 1px solid var(--border); }
-  .result:first-child { border-top: 0; }
-  .result .file { min-width: 0; overflow-wrap: anywhere; }
+  .pick-row { display: flex; flex-wrap: wrap; align-items: center; gap: 0.75rem; margin-top: 0.75rem; }
 
   /* Step 2: the open sheet — design + downloads beside a live preview. */
   .ws-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 1rem;
@@ -206,14 +199,13 @@
   <h2>Your Google Sheets</h2>
   <p class="note">Read live from Google each time you open one.</p>
   <ul id="saved-list"><li class="empty">Loading&hellip;</li></ul>
-  <details class="find" id="find">
-    <summary>Add a Google Sheet…</summary>
-    <div class="search-row">
-      <input type="text" id="search-box" placeholder="Search your Google Sheets by name&hellip;">
-      <button id="search-btn" type="button">Search</button>
-    </div>
-    <ul id="search-results"></ul>
-  </details>
+  {{#picker}}<div class="pick-row">
+    <button type="button" id="pick-btn">Pick a Google Sheet…</button>
+    <span id="pick-status" class="status muted"></span>
+  </div>{{/picker}}
+  {{^picker}}<p class="note">Adding a new Google Sheet isn't available: the server's Google
+    Picker settings (GOOGLE_API_KEY and GOOGLE_APP_ID) aren't configured. Sheets already
+    in your list still work.</p>{{/picker}}
 </section>
 {{/signed_in}}
 </div>
@@ -315,6 +307,8 @@ function el(tag, props, children) {
 
 const SIGNED_IN = {{#signed_in}}true{{/signed_in}}{{^signed_in}}false{{/signed_in}};
 const GOOGLE = {{#google}}true{{/google}}{{^google}}false{{/google}};
+const PICKER = {{#picker}}true{{/picker}}{{^picker}}false{{/picker}};
+const NONCE = '{{nonce}}';
 
 async function api(path, opts) {
   const res = await fetch(path, Object.assign({ credentials: 'same-origin' }, opts || {}));
@@ -776,8 +770,8 @@ async function loadSavedSheets() {
     const res = await api('/sheets');
     const data = await res.json();
     if (!data.sheets.length) {
-      list.appendChild(el('li', { class: 'empty', text: 'No sheets saved yet — add one below.' }));
-      $('find').open = true;
+      list.appendChild(el('li', { class: 'empty', text: PICKER ? 'No sheets saved yet — pick one below.'
+                                                                : 'No sheets saved yet.' }));
       return;
     }
     for (const sheet of data.sheets) {
@@ -811,53 +805,81 @@ async function loadSavedSheets() {
   }
 }
 
-async function runSearch() {
-  const q = $('search-box').value.trim();
-  const results = $('search-results');
-  results.textContent = '';
-  results.appendChild(el('li', { class: 'empty result', text: 'Searching…' }));
+// --- Google Picker ---
+// The app only asks Google for drive.file: it can read just the sheets
+// chosen here. Google's own dialog lists the user's spreadsheets; we get
+// back the picked file's id and name and save it like before.
+let pickerApi = null;
+function loadPickerApi() {
+  if (!pickerApi) {
+    pickerApi = new Promise((resolve, reject) => {
+      const script = document.createElement('script');
+      script.src = 'https://apis.google.com/js/api.js';
+      script.nonce = NONCE;  // the CSP only runs scripts that carry it
+      script.onload = () => gapi.load('picker', { callback: resolve, onerror: reject });
+      script.onerror = reject;
+      document.head.appendChild(script);
+    });
+    pickerApi.catch(() => { pickerApi = null; });  // let a later click retry
+  }
+  return pickerApi;
+}
+
+async function pickSheet() {
+  const btn = $('pick-btn');
+  const status = $('pick-status');
+  btn.disabled = true;
+  setText(status, 'Opening Google…');
   try {
-    const res = await api('/sheets/search?q=' + encodeURIComponent(q));
-    const data = await res.json();
-    results.textContent = '';
-    if (!data.files.length) {
-      results.appendChild(el('li', { class: 'empty result', text: 'No matching spreadsheets found.' }));
-      return;
-    }
-    for (const file of data.files) {
-      const nameSpan = el('span', { class: 'sheet-name', text: file.name });
-      const metaSpan = el('span', { class: 'muted', text: file.modifiedTime ? '  ·  edited ' + file.modifiedTime.slice(0, 10) : '' });
-      const addBtn = el('button', { type: 'button', text: 'Add' });
-      addBtn.addEventListener('click', async () => {
-        addBtn.disabled = true;
-        addBtn.textContent = 'Adding…';
-        try {
-          await api('/sheets', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ sheet_id: file.id, display_name: file.name.slice(0, 200) })
-          });
-          addBtn.textContent = 'Added';
-          loadSavedSheets();
-        } catch (e) {
-          addBtn.disabled = false;
-          addBtn.textContent = 'Add';
-        }
-      });
-      results.appendChild(el('li', { class: 'result' }, [el('span', { class: 'file' }, [nameSpan, metaSpan]), addBtn]));
-    }
+    const [res] = await Promise.all([api('/auth/picker-token'), loadPickerApi()]);
+    if (!res.ok) throw new Error(await res.text());
+    const cfg = await res.json();
+    const view = new google.picker.DocsView(google.picker.ViewId.SPREADSHEETS)
+      .setMode(google.picker.DocsViewMode.LIST);
+    const picker = new google.picker.PickerBuilder()
+      .addView(view)
+      .enableFeature(google.picker.Feature.SUPPORT_DRIVES)
+      .setOAuthToken(cfg.access_token)
+      .setDeveloperKey(cfg.api_key)
+      .setAppId(cfg.app_id)
+      .setOrigin(window.location.origin)
+      .setTitle('Pick your LUGBulk order sheet')
+      .setCallback((data) => onPicked(data).catch(() => {}))
+      .build();
+    picker.setVisible(true);
+    setText(status, '');
   } catch (e) {
-    results.textContent = '';
-    results.appendChild(el('li', { class: 'error result', text: 'Search failed — try again.' }));
+    setText(status, (e && e.message) || 'Could not open the Google Picker — try again.', true);
+  } finally {
+    btn.disabled = false;
   }
 }
 
-// Sheet search and saved sheets only exist for signed-in users.
+async function onPicked(data) {
+  const action = data[google.picker.Response.ACTION];
+  if (action !== google.picker.Action.PICKED) return;
+  const status = $('pick-status');
+  const doc = (data[google.picker.Response.DOCUMENTS] || [])[0];
+  if (!doc) return;
+  const name = String(doc[google.picker.Document.NAME] || 'Google Sheet').slice(0, 200);
+  setText(status, 'Adding "' + name + '"…');
+  try {
+    const res = await api('/sheets', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sheet_id: doc[google.picker.Document.ID], display_name: name })
+    });
+    if (!res.ok) throw new Error(await res.text());
+    setText(status, 'Added "' + name + '".');
+    loadSavedSheets();
+  } catch (e) {
+    setText(status, (e && e.message) || 'Could not add the sheet — try again.', true);
+  }
+}
+
+// The Picker and saved sheets only exist for signed-in users.
 if (SIGNED_IN) {
-  $('search-btn').addEventListener('click', runSearch);
-  $('search-box').addEventListener('keydown', (e) => {
-    if (e.key === 'Enter') { e.preventDefault(); runSearch(); }
-  });
+  if (PICKER) $('pick-btn').addEventListener('click', pickSheet);
   loadSavedSheets();
 }
 </script>

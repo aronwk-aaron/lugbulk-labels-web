@@ -12,7 +12,7 @@ PDFs / lot-count reports without installing Python or a service account key
 locally.
 
 **Status: working, pre-release.** Google OAuth login (encrypted refresh
-token storage, hashed session tokens), a Drive-backed sheet picker,
+token storage, hashed session tokens), a Google Picker sheet chooser,
 generation of label PDFs, a parts list and lot counts from the live sheet,
 and a per-sheet "last run" history are implemented.
 
@@ -30,7 +30,10 @@ and a per-sheet "last run" history are implemented.
 Without `GOOGLE_OAUTH_CLIENT_ID`/`_SECRET` the app runs upload-only (no
 `TOKEN_ENCRYPTION_KEY` needed then). Set `PUBLIC_URL` to the app's public
 address (e.g. `https://lugbulk.example.org`); it defaults to the origin of
-`GOOGLE_OAUTH_REDIRECT_URI` when Google is on.
+`GOOGLE_OAUTH_REDIRECT_URI` when Google is on. Adding a Google Sheet also
+needs `GOOGLE_API_KEY` and `GOOGLE_APP_ID` for the Google Picker (see
+[Google OAuth setup](#google-oauth-setup)); without them, signed-in users
+can still open sheets already in their list.
 
 ## What it generates
 
@@ -101,19 +104,25 @@ automatically on the next report. Without them, weights are estimated.
 
 Each user authenticates via Google OAuth and authorizes read access to
 their own sheets — there is no shared service account like the CLI uses.
-OAuth scopes requested: `openid email` (identity),
-`spreadsheets.readonly` (reading the sheet data itself), and
-`drive.metadata.readonly` (listing/searching the user's Drive by file name
-so they can pick a sheet — file *contents* are never read via the Drive
-API, only via the Sheets API scope, and only for a sheet the user has
-explicitly saved). The "Order Here" tab's columns are found by header text (`Element ID` /
+OAuth scopes requested: `openid email` (identity) and `drive.file` —
+Google's non-sensitive per-file scope, which only reaches the files the
+user opens with this app through the
+[Google Picker](https://developers.google.com/drive/picker). The app never
+sees the rest of their Drive; the Sheets API reads a picked sheet under
+`drive.file`. Because no sensitive or restricted scope is requested, the
+OAuth app can be published without Google's restricted-scope verification.
+Users who signed in before the switch (when the app asked for
+`spreadsheets.readonly` + `drive.metadata.readonly`) are sent through
+sign-in again the first time they open the Picker, and a saved sheet Google
+refuses to open must be chosen again with **Pick a Google Sheet…**. The "Order Here" tab's columns are found by header text (`Element ID` /
 `Part Number`, `Description`, `LEGO Color`, `BL Color`, `Weight`), and both
 known ways of laying out people are recognized: a `qty` marker row under
 the names (the ArkLUG sheet) or (name, running cost) header pairs (2026's
 master sheet) — see `src/sheet_pivot.h`.
 
-**Flow:** login → search/pick a sheet from Drive (`GET /sheets/search?q=`)
-→ save it (`POST /sheets`) → dashboard listing saved sheets → per sheet,
+**Flow:** login → **Pick a Google Sheet…** opens the Google Picker (the page
+gets a short-lived `drive.file` token, the API key and the app id from
+`GET /auth/picker-token`) → save the picked sheet (`POST /sheets`) → dashboard listing saved sheets → per sheet,
 Check sheet (`GET /sheets/:id/check`), Labels (`POST /sheets/:id/labels?spec=&order=`),
 Parts list (`POST /sheets/:id/parts?format=&order=`) or Lot counts
 (`POST /sheets/:id/lots?format=`) → runs synchronously against the live
@@ -199,34 +208,33 @@ container is up.
 ### Google OAuth setup
 
 1. [console.cloud.google.com](https://console.cloud.google.com) → a
-   project with the Sheets API enabled (same as `lugbulk-label`'s service
-   account setup, but this time for an OAuth client instead of a service
-   account).
-2. **APIs & Services → OAuth consent screen** — configure as Internal or
-   External + Testing, add the organizers' Google accounts as test users
-   if kept in Testing mode (fine for a "few trusted organizers" audience).
+   project with the **Google Sheets API** and the **Google Picker API**
+   enabled (APIs & Services → Library).
+2. **APIs & Services → OAuth consent screen** (Google Auth Platform) —
+   scopes: `openid`, `.../auth/userinfo.email` and `.../auth/drive.file`
+   only. `drive.file` is non-sensitive, so the app can be published
+   (Audience → **Publish app**) without restricted-scope verification.
 3. **APIs & Services → Credentials → Create Credentials → OAuth client
    ID** — type "Web application". Add an authorized redirect URI matching
    `GOOGLE_OAUTH_REDIRECT_URI` (e.g. `http://localhost:8080/auth/callback`
    for local dev; your real domain's callback URL in production).
 4. Copy the client ID and secret into `.env`.
+5. **Credentials → Create Credentials → API key** for the Picker. Restrict
+   it: Application restrictions → **Websites**, the app's origin (e.g.
+   `https://lugbulk.example.org/*`); API restrictions → **Google Picker
+   API** only. Put it in `GOOGLE_API_KEY`. It is sent to signed-in users'
+   browsers, which is how Picker keys work — the restrictions are what
+   protect it.
+6. `GOOGLE_APP_ID` is the project **number** (not the project id): Cloud
+   Console → the project's **Dashboard** / **IAM & Admin → Settings**.
 
-**"Google hasn't verified this app" screen:** while the OAuth consent
-screen is in Testing mode (the default above), every login shows Google's
-unverified-app interstitial for anyone signing in — including test users
-who were explicitly added. This is expected, not a bug: it goes away only
-after submitting the app for Google's verification review (requires a
-public privacy policy, homepage, etc. — not worth it for a handful of
-trusted organizers). To get past it as a test user: click **Advanced** →
-**"Go to lugbulk-labels-web (unsafe)"** → **Continue**. If the Advanced
-link doesn't appear, the signed-in Google account isn't in **OAuth consent
-screen → Test users** yet — add it there.
-
-**TODO for later:** either live with the click-through screen permanently
-(fine for this audience), or if it becomes annoying, look at Google's
-verification process for real — see
-[Learn more](https://support.google.com/cloud/answer/7454865) on that
-screen.
+**"Google hasn't verified this app" screen:** it shows while the consent
+screen is in **Testing** (only listed test users can sign in; click
+**Advanced** → **"Go to lugbulk-labels-web (unsafe)"**). Since the app only
+asks for `openid`, `email` and `drive.file` — none of them sensitive or
+restricted — publishing it (Audience → **Publish app**) makes sign-in open
+to any Google account without the security assessment that restricted
+Drive scopes need. Use `ALLOWED_EMAILS` to keep it to your organizers.
 
 ## Building without Docker
 

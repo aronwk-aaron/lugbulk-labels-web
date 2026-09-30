@@ -14,10 +14,21 @@ struct Config {
     std::string google_redirect_uri;
     std::string token_encryption_key_b64;  // 32 raw bytes, base64-encoded
     std::string data_dir;                  // holds sqlite db; defaults to "."
+    // Google Picker (choosing a sheet from Drive in the browser):
+    // GOOGLE_API_KEY is a browser API key restricted to the app's origin and
+    // the Picker API; GOOGLE_APP_ID is the Cloud project number. Both are
+    // handed to the signed-in user's page, so neither is a secret, but they
+    // are still never logged.
+    std::string google_api_key;
+    std::string google_app_id;
 
     // Google sign-in (saved sheets read live from Google) is on when the
     // OAuth client is configured; uploads work either way.
     bool google_enabled() const { return !google_client_id.empty(); }
+    // Picking a new sheet needs the Picker's key and app id as well.
+    bool picker_enabled() const {
+        return google_enabled() && !google_api_key.empty() && !google_app_id.empty();
+    }
 
     // The app's public URL, e.g. https://lugbulk.example.org (PUBLIC_URL;
     // defaults to the origin of GOOGLE_OAUTH_REDIRECT_URI when Google is
