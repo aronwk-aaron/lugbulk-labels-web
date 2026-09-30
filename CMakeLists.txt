@@ -58,6 +58,7 @@ add_library(lugbulk_core STATIC
     src/ordering.cpp
     src/sheet_layout.cpp
     src/sheet_pivot.cpp
+    src/records.cpp
     src/reports.cpp
     src/labels_pdf.cpp
     src/rate_limits.cpp
@@ -99,4 +100,12 @@ if(LUGBULK_BUILD_TESTS)
         LUGBULK_FIXTURES="${CMAKE_SOURCE_DIR}/tests/fixtures")
     target_link_libraries(lugbulk_tests PRIVATE lugbulk_core)
     add_test(NAME lugbulk_tests COMMAND lugbulk_tests)
+
+    # Golden JSON for the browser port's parity test (tests/js/): run as
+    # `lugbulk_golden <dir>`; the Docker build writes build/golden.
+    add_executable(lugbulk_golden tests/golden.cpp)
+    target_compile_definitions(lugbulk_golden PRIVATE
+        LUGBULK_LABEL_SPECS_PATH="${CMAKE_SOURCE_DIR}/data/label_specs.json"
+        LUGBULK_FIXTURES="${CMAKE_SOURCE_DIR}/tests/fixtures")
+    target_link_libraries(lugbulk_golden PRIVATE lugbulk_core)
 endif()
