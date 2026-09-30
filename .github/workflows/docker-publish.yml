@@ -195,6 +195,14 @@ jobs:
           grep -qi '^content-type: text/javascript' js.headers
           grep -qi '^cache-control: public, max-age=300' js.headers
           grep -q 'export function pivotSheet' pivot.js
+          # The sheet reader and loader the dashboard imports.
+          curl -fsS -o spreadsheet.js http://localhost:8080/static/js/spreadsheet.js
+          grep -q 'export async function readXlsx' spreadsheet.js
+          curl -fsS -o load.js http://localhost:8080/static/js/load.js
+          grep -q 'export async function loadSheet' load.js
+          # The dashboard's script is a module that loads sheets with them.
+          grep -q '<script type="module" nonce="' <<< "$page"
+          grep -qF "import { loadSheet } from '/static/js/load.js';" <<< "$page"
           for bad in nope.js Pivot.js package.json ..%2Fpivot.js ..%2F..%2Fsql%2Fschema.sql; do
             code="$(curl -s -o /dev/null -w '%{http_code}' "http://localhost:8080/static/js/$bad")"
             echo "/static/js/$bad -> $code"

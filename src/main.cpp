@@ -1127,6 +1127,17 @@ int main() {
 
         try {
             auto rows = fetch_order_rows(cfg, *db, user->id, owned->sheet_id);
+            // Keep the pivot for this sheet's preview too, as /check does:
+            // the dashboard reads the sheet here, then asks for a preview,
+            // and that shouldn't read Google a second time.
+            try {
+                PivotResult pivot = pivot_sheet(rows);
+                check_run_size(pivot);
+                apply_bricklink(pivot);
+                g_pivots->put(user->id, owned->sheet_row_id, pivot);
+            } catch (const TooBig&) {
+                // Nothing to preview; the browser reports it from the rows.
+            }
             std::string body = "{\"rows\":[";
             for (size_t r = 0; r < rows.size(); ++r) {
                 if (r > 0) body += ",";
