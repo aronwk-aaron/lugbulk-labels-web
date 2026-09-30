@@ -104,6 +104,35 @@ two in step when changing either.
 `--per-person` PDFs, `--sort-by` toggle (last-name order only), and
 per-event color/weight overrides (fix the sheet instead).
 
+## Security and abuse limits
+
+Generating a report is expensive (a Google Sheets read, dozens of photo
+downloads and BrickLink lookups, PDF rendering), so the server limits what
+any one person — or script — can make it do:
+
+| What | Limit |
+|---|---|
+| Who can sign in | `ALLOWED_EMAILS` (addresses and/or `@domain`s); verified Google email required. Removing someone locks them out immediately. **Set this** — unset lets any Google account in and logs a warning at startup. |
+| Reports and Check sheet | 6 at once, then one per 2 minutes, per user; one running per user; `MAX_CONCURRENT_JOBS` (default 2) server-wide. Over the limit gets an immediate "try again" (HTTP 429), never a queue. |
+| Drive search | 10 at once, then one per 3 seconds, per user |
+| Any request | 120 at once, then 10/second, per client IP (sign-in routes: 10, then one per 6 seconds) |
+| Request body | 64 KB (Crow patched at build time — `cmake/patch_crow.cmake`); bigger uploads are dropped |
+| Sheet size | 3,000 rows read; 20,000 labels / 2,000 parts per run; 32 MB Google response |
+| Saved sheets | 50 per user; 10 sessions per user |
+| BrickLink | 300 new lookups per run, `BRICKLINK_DAILY_CALLS` (default 4,000) per day server-wide |
+| Part photos | only digit element IDs, only from LEGO's CDN over HTTPS, 2 MB max |
+
+Behind a reverse proxy, set `TRUST_PROXY=1` so limits apply per visitor
+rather than to the proxy's single IP (only with a proxy that sets
+`X-Forwarded-For` — otherwise clients could fake it). A proxy is also the
+place for TLS and connection limits; the app itself serves plain HTTP.
+
+Every response carries a strict Content-Security-Policy, `nosniff`,
+`X-Frame-Options: DENY` and a `text/plain` default; state-changing
+requests from another origin are refused; session cookies are HttpOnly,
+SameSite=Lax (and Secure over https) and stored hashed; refresh tokens are
+AES-256-GCM encrypted at rest.
+
 ## Local development
 
 ```
@@ -232,6 +261,8 @@ or with the compose file: `LUGBULK_TAG=canary docker compose pull && docker comp
 | `sql/schema.sql` | SQLite schema: users, sheets, runs, sessions |
 | `templates/dashboard.html` | Mustache template for the logged-in dashboard page (Crow's bundled `crow::mustache`) |
 | `Dockerfile` | Multi-stage build (Debian bookworm base); tests run during the build |
+| `src/rate_limits.{h,cpp}` | Rate limiter, job gate, daily budget, sign-in allowlist |
+| `cmake/patch_crow.cmake` | Caps Crow's request body size |
 | `docker/entrypoint.sh` | Fixes `/data` ownership, then drops to the `lugbulk` user |
 | `.github/workflows/docker-publish.yml` | CI: builds, tests, publishes the image to GHCR, and creates canary/versioned GitHub releases |
 | `docker-compose.yml` | Local dev convenience — build + run with a persistent volume |

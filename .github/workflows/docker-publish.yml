@@ -105,6 +105,10 @@ jobs:
           curl -fsS http://localhost:8080/healthz
           # Reports the version it was built as.
           test "$(curl -fsS http://localhost:8080/version)" = "$VERSION"
+          # An oversized request body is dropped, not buffered (Crow patch).
+          code="$(head -c 200000 /dev/zero | curl -s -o /dev/null -w '%{http_code}' \
+            -X POST --data-binary @- http://localhost:8080/sheets || true)"
+          test "$code" = 000
           # Logged-out dashboard must redirect to Google login.
           test "$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8080/)" = 302
           # Runs as the unprivileged user, not root.

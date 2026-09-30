@@ -284,6 +284,24 @@ void Db::delete_expired_sessions() {
     s.step();
 }
 
+void Db::trim_sessions(int64_t user_id, int keep) {
+    Stmt s(db_,
+           "DELETE FROM sessions WHERE user_id = ? AND token NOT IN ("
+           "  SELECT token FROM sessions WHERE user_id = ? "
+           "  ORDER BY created_at DESC, rowid DESC LIMIT ?);");
+    s.bind_int64(1, user_id);
+    s.bind_int64(2, user_id);
+    s.bind_int(3, keep);
+    s.step();
+}
+
+size_t Db::count_sheets(int64_t user_id) {
+    Stmt s(db_, "SELECT COUNT(*) FROM sheets WHERE user_id = ?;");
+    s.bind_int64(1, user_id);
+    s.step();
+    return static_cast<size_t>(s.column_int64(0));
+}
+
 Sheet Db::add_sheet(int64_t user_id, const std::string& sheet_id,
                      const std::string& display_name) {
     // schema.sql has UNIQUE(user_id, sheet_id); re-adding an already-saved
