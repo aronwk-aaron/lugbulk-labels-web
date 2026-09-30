@@ -132,14 +132,14 @@ void test_pivot_qty_marker_layout() {
 }
 
 void test_pivot_name_cost_pair_layout() {
-    // 2026 master sheet: totals row above the header; each person is
+    // Master-sheet layout (made-up values): totals row above the header; each person is
     // (name, running cost); LEGO colors only.
     std::vector<std::vector<std::string>> rows = {
-        {"83961", "", "", "", "", "", "", "Ann Lee", ""},
+        {"41234", "", "", "", "", "", "", "Ann Lee", ""},
         {"Total Ordered", "Part Number", "Description", "LEGO Color", "BL Color", "Price",
-         "Nominated for", "Ann Lee", "$232.45", "Bob Roe", "44.25"},
+         "Nominated for", "Ann Lee", "$120.50", "Bob Roe", "30.00"},
         {},
-        {"2650", "4211407", "PLATE 4X8", "WHITE", "", "0.13", "MILS", "100", "13", "x", ""},
+        {"1500", "4211407", "PLATE 4X8", "WHITE", "", "0.10", "ZZZ", "100", "10", "x", ""},
     };
     PivotResult r = pivot_sheet(rows);
     CHECK_EQ(r.records.size(), size_t{1});
