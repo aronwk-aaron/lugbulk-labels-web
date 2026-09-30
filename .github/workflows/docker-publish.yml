@@ -127,6 +127,9 @@ jobs:
             -H 'Content-Type: application/octet-stream' -o all.zip http://localhost:8080/upload/all
           unzip -l all.zip
           test "$(unzip -Z1 all.zip | wc -l)" = 7
+          # Privacy policy and terms (linked from Google's consent screen).
+          curl -fsS http://localhost:8080/privacy | grep -q 'Limited Use'
+          curl -fsS http://localhost:8080/terms | grep -q 'Terms of service'
           # Live preview of the file's own labels: a PDF.
           curl -fsS -X POST --data-binary @tests/fixtures/sample_order.xlsx \
             -H 'Content-Type: application/octet-stream' -o preview.pdf \
