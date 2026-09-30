@@ -216,6 +216,26 @@ jobs:
           curl -fsS -o pdf-lib.js http://localhost:8080/static/js/vendor/pdf-lib.js
           sha256sum pdf-lib.js
           test "$(sha256sum < pdf-lib.js | cut -d' ' -f1)" = 72c052d97b4d5d9fa6cdbdcb7ad709f03d4ddb1122390cb3afeba4d88651d969
+          # Label PDFs in the browser: labels.js, the image backdrop, the
+          # labels worker and the vendored QR generator (pinned build).
+          for f in labels.js backdrop.js labels_worker.js vendor/qrcodegen.js; do
+            curl -fsS -D mod.headers -o mod.js "http://localhost:8080/static/js/$f"
+            echo "/static/js/$f -> $(wc -c < mod.js) bytes"
+            grep -qi '^content-type: text/javascript' mod.headers
+            grep -qi '^cache-control: public, max-age=300' mod.headers
+            # A worker runs under its own script's CSP: this app's scripts only.
+            grep -qi "^content-security-policy: default-src 'none'; script-src 'self'" mod.headers
+          done
+          curl -fsS -o labels.js http://localhost:8080/static/js/labels.js
+          grep -q 'export async function buildLabelsPdf' labels.js
+          grep -qF "from './vendor/qrcodegen.js'" labels.js
+          curl -fsS -o qrcodegen.js http://localhost:8080/static/js/vendor/qrcodegen.js
+          test "$(sha256sum < qrcodegen.js | cut -d' ' -f1)" = 0cc3d38d2c3b2f083bec80e61d27270ea11328ecc9130b0c4cb829aa70f6d8d4
+          # Logging a browser-made download needs sign-in.
+          code="$(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/json' \
+            --data '{"report_type":"labels","item_count":3}' http://localhost:8080/sheets/1/runs)"
+          echo "POST /sheets/1/runs signed out -> $code"
+          test "$code" = 401 || test "$code" = 403
           # The vendor folder has the same flat-name rule: its README and
           # license aren't served, and nothing outside it can be reached.
           for bad in README.md pdf-lib.LICENSE.md Pdf-lib.js ..%2Freports.js ..%2F..%2F..%2Fsql%2Fschema.sql; do
@@ -244,6 +264,14 @@ jobs:
           # The dashboard's CSP lets same-origin modules load beside its nonce.
           curl -fsS -D dash.headers -o /dev/null http://localhost:8080/
           grep -qi "^content-security-policy: default-src 'self'; script-src 'self' 'nonce-" dash.headers
+          # ...and a same-origin Web Worker (the labels worker).
+          grep -qi "worker-src 'self'" dash.headers
+          # The dashboard makes the labels itself: it never sends a file or
+          # asks the server for a labels PDF or preview any more.
+          for gone in "/upload/" "/preview?" "'/labels?'" "/all" "X-File-Name"; do
+            if grep -qF "$gone" <<< "$page"; then echo "dashboard still uses $gone"; exit 1; fi
+          done
+          grep -qF "new Worker('/static/js/labels_worker.js', { type: 'module' })" <<< "$page"
           # Everything else stays uncacheable.
           curl -fsS -D version.headers -o /dev/null http://localhost:8080/version
           grep -qi '^cache-control: no-store, private' version.headers

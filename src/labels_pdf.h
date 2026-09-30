@@ -97,6 +97,30 @@ std::vector<uint8_t> build_labels_pdf(const std::vector<LabelRecord>& records,
 // plain paper and hold against the label stock to check alignment.
 std::vector<uint8_t> build_test_page(const layout::LabelSpec& spec);
 
+// Where everything on one label goes, in label-local points (origin at the
+// label's bottom-left) — what draw_label draws, decided without PoDoFo so
+// tests/golden.cpp can dump it for the browser port's parity test
+// (static/js/labels.js layoutLabel gives the same numbers).
+struct LaidText {
+    bool bold = false;
+    double size = 0, x = 0, y = 0;  // y is the baseline
+    std::string text;               // WinAnsi
+};
+struct LabelDrawing {
+    struct Square { double x = 0, y = 0, size = 0; };
+    std::optional<Square> image;  // the photo's box
+    std::optional<Square> qr;     // the QR code's box (of bricklink_url)
+    struct Swatch { double x = 0, y = 0, side = 0; std::array<double, 3> rgb{}; bool trans = false; };
+    std::optional<Swatch> swatch;
+    std::vector<LaidText> texts;  // in drawing order
+};
+// A line's width in points: (bold?, WinAnsi text, font size).
+using MeasureFn = std::function<double(bool, const std::string&, double)>;
+LabelDrawing layout_label(const LabelRecord& record, double width, double height,
+                          const LabelOptions& opts, const MeasureFn& measure);
+// PoDoFo's Helvetica / Helvetica-Bold metrics, the ones the PDFs use.
+MeasureFn helvetica_measure();
+
 // How one label field's text is drawn: its lines (WinAnsi), font size and
 // the distance between baselines.
 struct FittedText {

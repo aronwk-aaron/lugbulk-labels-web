@@ -320,7 +320,10 @@
 <script type="module" nonce="{{nonce}}">
 // The page's script is a module so it can use the browser-side code in
 // /static/js/ (the CSP allows same-origin scripts beside this nonce).
+import { perSheet } from '/static/js/labels.js';
+import { labelSpecFinder } from '/static/js/layout.js';
 import { loadSheet } from '/static/js/load.js';
+import { orderRecords } from '/static/js/ordering.js';
 import * as reportOptions from '/static/js/report_options.js';
 import * as reports from '/static/js/reports.js';
 import { zip } from '/static/js/zip.js';
@@ -680,16 +683,88 @@ function uploadOptions() {
   }
 }
 
-// Where the open sheet's routes live, and how to send a request to one:
-// an upload sends the file itself as the body.
-const wsBase = () => ws.kind === 'sheet' ? '/sheets/' + encodeURIComponent(ws.sheet.row_id) : '/upload';
-function wsRequest(path, method) {
-  return api(path, ws.kind === 'upload' ? uploadRequest(ws.file) : { method: method || 'POST' });
+// Where a saved sheet's routes live (its design, values and run log). An
+// uploaded file never leaves the browser: everything is made here.
+const wsBase = () => '/sheets/' + encodeURIComponent(ws.sheet.row_id);
+
+// --- Label PDFs ---
+// Made in the browser (static/js/labels.js) in a module Web Worker
+// (labels_worker.js), so a big sheet doesn't freeze the page. Without
+// Worker support the same code runs here instead.
+let specFinder = null;
+async function labelSpec(id) {
+  if (!specFinder) {
+    const res = await fetch('/label-specs.json', { credentials: 'same-origin' });
+    if (!res.ok) throw new Error('Couldn’t load the label stock list — try again.');
+    specFinder = labelSpecFinder(await res.json());
+  }
+  const spec = specFinder(id);
+  if (!spec) throw new Error('Unknown label stock “' + id + '”.');
+  return spec;
 }
-function uploadRequest(file) {
-  // Header values must be plain ASCII; the server only uses it for names.
-  const name = file.name.replace(/[^\x20-\x7e]/g, '_');
-  return { method: 'POST', body: file, headers: { 'X-File-Name': name, 'Content-Type': 'application/octet-stream' } };
+let labelWorker = null;
+let workerSeq = 0;
+const workerJobs = new Map();
+function startWorker() {
+  if (labelWorker || typeof Worker !== 'function') return labelWorker;
+  try {
+    labelWorker = new Worker('/static/js/labels_worker.js', { type: 'module' });
+  } catch (e) {
+    return null;
+  }
+  labelWorker.onmessage = (event) => {
+    const job = workerJobs.get(event.data.id);
+    if (!job) return;
+    if (event.data.progress) return job.onProgress && job.onProgress(event.data.progress);
+    workerJobs.delete(event.data.id);
+    if (event.data.error) job.reject(new Error(event.data.error));
+    else job.resolve(event.data.pdf);
+  };
+  labelWorker.onerror = (event) => {
+    // The worker couldn't start (or crashed): fail what's running, and run
+    // on this page from now on.
+    event.preventDefault();
+    for (const job of workerJobs.values()) job.reject(new Error('The label maker stopped — try again.'));
+    workerJobs.clear();
+    labelWorker.terminate();
+    labelWorker = false;
+  };
+  return labelWorker;
+}
+async function runLabelJob(message, onProgress) {
+  const worker = startWorker();
+  if (worker) {
+    return new Promise((resolve, reject) => {
+      const id = ++workerSeq;
+      workerJobs.set(id, { resolve, reject, onProgress });
+      worker.postMessage(Object.assign({ id }, message));
+    });
+  }
+  const labels = await import('/static/js/labels.js');
+  if (message.cmd === 'test_page') return labels.buildTestPage(message.spec);
+  return labels.buildLabelsPdf(message.records, message.spec, {
+    show: labels.optionsFromHidden(message.hidden), images: message.images,
+    maxPages: message.maxPages, onProgress,
+  });
+}
+// The labels PDF for the sheet read (`loaded`) in the design on screen:
+// all of it, or the first page (three labels on roll stock) for the
+// preview. `say(text)` shows progress.
+async function makeLabels(loaded, { preview = false, say = () => {} } = {}) {
+  const design = currentDesign();
+  const spec = await labelSpec(design.spec);
+  const maxPages = preview ? (perSheet(spec) === 1 ? 3 : 1) : 0;
+  let records = orderRecords(loaded.records, design.order);
+  if (maxPages) records = records.slice(0, maxPages * perSheet(spec));
+  const hidden = new Set(design.hide.split(',').filter(Boolean));
+  let images = new Map();
+  if (!hidden.has('photo')) {
+    const ids = [...new Set(records.map((r) => r.element_id))];
+    images = await fetchPhotos(ids, (done, total) => say('Fetching photos ' + done + '/' + total));
+  }
+  return runLabelJob({ cmd: 'labels', records, spec, hidden: design.hide, maxPages, images }, (p) => {
+    if (p.phase === 'pages' && p.pages > 1) say('Page ' + p.page + ' of ' + p.pages);
+  });
 }
 
 // --- Tabs ---
@@ -758,6 +833,10 @@ function photo(id) {
 async function photosFor(kind, loaded, options, onProgress) {
   const ids = reports.imageIdsFor(kind, loaded.records, options);
   if (!ids.length) return null;
+  return fetchPhotos(ids, onProgress);
+}
+// Map id -> JPEG bytes (null: no photo) for `ids`, six at a time.
+async function fetchPhotos(ids, onProgress) {
   const images = new Map();
   let next = 0;
   let done = 0;
@@ -769,18 +848,15 @@ async function photosFor(kind, loaded, options, onProgress) {
       if (onProgress && done < ids.length) onProgress(done, ids.length);
     }
   };
-  await Promise.all([worker(), worker(), worker(), worker()]);
+  await Promise.all(Array.from({ length: Math.min(6, ids.length) }, worker));
   return images;
 }
 
 // --- Preview ---
-// Labels come from the server (paused while a download is being made: the
-// server runs one job per person at a time, then brought up to date).
-// Reports are made here from the sheet already read (`ws.loaded`).
+// Made here from the sheet already read (`ws.loaded`): the labels' first
+// page in the design on screen, or a report.
 let previewUrl = null;
 let previewSeq = 0;
-let busy = 0;
-let previewStale = false;
 function showPdf(blob) {
   const url = URL.createObjectURL(blob);
   $('preview').src = url + '#view=FitH';
@@ -791,21 +867,26 @@ function showPdf(blob) {
 async function renderPreview() {
   if (!ws) return;
   if (tab !== 'labels') return renderReportPreview(tab);
-  if (busy) { previewStale = true; return; }
-  previewStale = false;
   const seq = ++previewSeq;
   const status = $('preview-status');
-  setText(status, 'Updating…');
   const opened = ws;
+  const current = () => ws === opened && seq === previewSeq;
+  if (!ws.loaded) {
+    setText(status, 'The sheet hasn’t been read yet — try “Check again”.', true);
+    return;
+  }
+  if (!ws.loaded.records.length) {
+    setText(status, 'No orders on this sheet yet — see the check above.', true);
+    return;
+  }
+  setText(status, 'Updating…');
   try {
-    const res = await wsRequest(wsBase() + '/preview?' + new URLSearchParams(currentDesign()));
-    if (!res.ok) throw new Error(await res.text());
-    const blob = await res.blob();
-    if (ws !== opened || seq !== previewSeq) return;
-    showPdf(blob);
+    const bytes = await makeLabels(ws.loaded, { preview: true, say: (t) => current() && setText(status, t) });
+    if (!current()) return;
+    showPdf(new Blob([bytes], { type: 'application/pdf' }));
     setText(status, '');
   } catch (e) {
-    if (ws === opened && seq === previewSeq) setText(status, e.message, true);
+    if (current()) setText(status, (e && e.message) || 'Couldn’t make the preview.', true);
   }
 }
 async function renderReportPreview(kind) {
@@ -887,9 +968,8 @@ for (const id of ['label-spec', 'part-order']) $(id).addEventListener('change', 
 $('switches').addEventListener('change', designChanged);
 $('test-page-btn').addEventListener('click', async () => {
   try {
-    const res = await api('/test-page?spec=' + encodeURIComponent(opt('label-spec')));
-    if (!res.ok) throw new Error(await res.text());
-    window.open(URL.createObjectURL(await res.blob()), '_blank');
+    const bytes = await runLabelJob({ cmd: 'test_page', spec: await labelSpec(opt('label-spec')) });
+    window.open(URL.createObjectURL(new Blob([bytes], { type: 'application/pdf' })), '_blank');
   } catch (e) {
     setText($('design-status'), e.message, true);
   }
@@ -990,8 +1070,10 @@ $('ws-close').addEventListener('click', () => {
 });
 
 // --- Downloads ---
-// The labels PDF comes from the server; the reports, the sheet check and
-// the zip are made here in the browser. fetch() can't drive a download
+// Every file — the labels PDF, the reports, the sheet check and the zip —
+// is made here in the browser; a saved sheet's download is then logged
+// (POST /sheets/<id>/runs: the kind and a count, never the file) for its
+// "Last download" line. fetch() can't drive a download
 // directly, so each file is handed to a throwaway <a download>.
 function saveBlob(blob, name) {
   const url = URL.createObjectURL(blob);
@@ -1001,22 +1083,31 @@ function saveBlob(blob, name) {
   a.remove();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
-// A failed server response as an Error (its plain-text messages are meant for the user).
-async function responseError(res) {
-  const text = await res.text().catch(() => '');
-  return new Error(text || ('Request failed (' + res.status + ') — try again.'));
+// The runs log's report_type for a download of `chosen` (null: not logged).
+function runType(chosen) {
+  if (chosen.length > 1) return 'bundle';
+  const id = chosen[0];
+  if (id === 'labels') return 'labels';
+  const kind = id.split('_')[0];
+  return { checklist: 'checklist', parts: 'parts', lots: 'lot_counts' }[kind] || null;
+}
+function logRun(opened, reportType, count) {
+  if (opened.kind !== 'sheet' || !reportType) return Promise.resolve();
+  return api('/sheets/' + encodeURIComponent(opened.sheet.row_id) + '/runs', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ report_type: reportType, item_count: count }),
+  }).catch(() => {});  // the log is a nicety
 }
 const dlButtons = [$('dl-zip')];
 const stemOf = (w) => reports.fileStem(w.name, w.kind === 'upload');
 const REPORT_FILES = { checklist: ' packing checklist', parts: ' parts', lots: ' lot counts' };
 
-// Runs one download: buttons off, the labels preview paused, errors shown.
+// Runs one download: buttons off, errors shown.
 async function download(busyText, work) {
   if (!ws) return;
   const opened = ws;
   const status = $('dl-status');
   dlButtons.forEach(b => b.disabled = true);
-  busy++;
   setText(status, busyText);
   try {
     await work(opened, status);
@@ -1024,11 +1115,9 @@ async function download(busyText, work) {
   } catch (e) {
     if (ws === opened) setText(status, (e && e.message) || 'Something went wrong — try again.', true);
   }
-  busy--;
   dlButtons.forEach(b => b.disabled = false);
   updateZipButton();
-  if (previewStale || tab !== 'labels') refreshPreview();
-  if (opened.kind === 'sheet') refreshHistory(opened.sheet);
+  refreshPreview();  // the sheet was read again
 }
 
 // The sheet as it is now: downloads read it again first, as the server's
@@ -1041,12 +1130,6 @@ async function freshSheet(opened, status) {
   return ws.loaded;
 }
 
-// The labels PDF, from the server, in the design on screen.
-async function labelsPdf() {
-  const res = await wsRequest(wsBase() + '/labels?' + new URLSearchParams(currentDesign()));
-  if (!res.ok) throw await responseError(res);
-  return new Uint8Array(await res.arrayBuffer());
-}
 
 // One report's file: {name, bytes|text, type}.
 async function reportFile(kind, format, loaded, opened, status) {
@@ -1064,7 +1147,7 @@ async function reportFile(kind, format, loaded, opened, status) {
 }
 
 // "Download": the ticked files, made here — one file as itself, several
-// in one .zip. Only the labels PDF is fetched from the server.
+// in one .zip.
 $('dl-zip').addEventListener('click', () => download('Reading the sheet…', async (opened, status) => {
   const chosen = reportOptions.zipSelection(opened.options);
   if (!chosen.length) throw new Error('Tick at least one file to put in the zip.');
@@ -1073,8 +1156,9 @@ $('dl-zip').addEventListener('click', () => download('Reading the sheet…', asy
   const files = [];
   for (const id of chosen) {
     if (id === 'labels') {
-      setText(status, 'Making your labels… (can take a minute)');
-      files.push([stem + ' labels.pdf', await labelsPdf()]);
+      setText(status, 'Making your labels…');
+      const say = (t) => ws === opened && setText(status, 'Making your labels… ' + t);
+      files.push([stem + ' labels.pdf', await makeLabels(loaded, { say })]);
     } else if (id === 'check_txt') {
       files.push([stem + ' sheet check.txt', reports.sheetCheckText(loaded)]);
     } else {
@@ -1090,10 +1174,12 @@ $('dl-zip').addEventListener('click', () => download('Reading the sheet…', asy
     const type = name.endsWith('.pdf') ? 'application/pdf'
       : name.endsWith('.csv') ? 'text/csv;charset=utf-8' : 'text/plain;charset=utf-8';
     saveBlob(new Blob([data], { type }), name);
-    return;
+  } else {
+    setText(status, 'Packing the zip…');
+    saveBlob(new Blob([zip(files)], { type: 'application/zip' }), stem + ' labels and reports.zip');
   }
-  setText(status, 'Packing the zip…');
-  saveBlob(new Blob([zip(files)], { type: 'application/zip' }), stem + ' labels and reports.zip');
+  await logRun(opened, runType(chosen), loaded.records.length);
+  if (opened.kind === 'sheet') refreshHistory(opened.sheet);
 }));
 
 // --- Upload ---

@@ -43,8 +43,8 @@ can still open sheets already in their list.
   part photo, Element ID (bold), quantity, both LEGO and BrickLink color
   names, description and the person's name. Trans, white, and very pale
   parts are shown on a light gray tile so they don't vanish when printed.
-- **Label design** — per sheet, with a live preview (sample parts, the
-  real PDF renderer): switch any label part on or off — photo, element ID,
+- **Label design** — per sheet, with a live preview (the first page of
+  the sheet's own labels, made in the browser): switch any label part on or off — photo, element ID,
   quantity, LEGO and BrickLink color, description, name, "3 of 10" count,
   gray tile behind clear/white parts, color swatch, QR code linking to the
   part on BrickLink — and pick the stock and part order. Designs are saved
@@ -54,8 +54,15 @@ can still open sheets already in their list.
   printer first.
 - **Download** — tick the files you want: labels, packing checklist, parts
   list and lot counts (PDF and CSV) and the sheet check. One file downloads
-  as it is; several come in one `.zip`. The reports and the zip are made in
-  the browser (only the labels PDF comes from the server).
+  as it is; several come in one `.zip`. Everything — labels, reports and
+  the zip — is made in the browser: an uploaded file never leaves it, and
+  for a saved Google Sheet the server only passes on the sheet's cells
+  (`/sheets/:id/values`), BrickLink data (`/bricklink/lookup`) and part
+  photos (`/img/<id>.jpg`). Label PDFs are built in a Web Worker
+  (`static/js/labels_worker.js`) with progress ("Fetching photos 120/800",
+  "Page 3 of 40"); a saved sheet's download is logged
+  (`POST /sheets/:id/runs`, the kind and a count only) for its "Last
+  download" line.
 - **Report tabs** — Labels · Packing checklist · Parts list · Lot counts,
   each with its own settings and a live preview made in the browser. Every
   report can have its own title and subtitle line, US Letter or A4,
@@ -132,7 +139,8 @@ known ways of laying out people are recognized: a `qty` marker row under
 the names (the ArkLUG sheet) or (name, running cost) header pairs (2026's
 master sheet) — see `src/sheet_pivot.h`.
 
-**Flow:** login → **Pick a Google Sheet…** opens the Google Picker (the page
+**Flow (server routes, kept for CI and other clients; the dashboard now
+makes every file in the browser — see Download above):** login → **Pick a Google Sheet…** opens the Google Picker (the page
 gets a short-lived `drive.file` token, the API key and the app id from
 `GET /auth/picker-token`) → save the picked sheet (`POST /sheets`) → dashboard listing saved sheets → per sheet,
 Check sheet (`GET /sheets/:id/check`), Labels (`POST /sheets/:id/labels?spec=&order=`),
@@ -327,7 +335,8 @@ or with the compose file: `LUGBULK_TAG=canary docker compose pull && docker comp
 | `src/sheet_pivot.{h,cpp}` | Sheet rows → one record per (person, part), plus data issues |
 | `src/colors.{h,cpp}` | LEGO ↔ BrickLink color name table |
 | `src/ordering.{h,cpp}` | Part weight estimates, label order, "N of M" numbering, per-part summaries |
-| `src/labels_pdf.{h,cpp}` | Label PDF rendering and the shared part-photo cache |
+| `src/labels_pdf.{h,cpp}` | Label PDF rendering (server routes; `layout_label` is the layout the browser port matches) and the shared part-photo cache |
+| `static/js/labels.js`, `backdrop.js`, `labels_worker.js` | Label PDFs in the browser (pdf-lib, Nayuki's qrcodegen), the gray tile behind light parts, and the Web Worker that runs them; checked against the C++ by `tests/js/labels.test.mjs` |
 | `src/image_backdrop.{h,cpp}` | Gray-tile treatment for trans/white part photos |
 | `src/bricklink.{h,cpp}` | Reads BrickLink's catalog download files: weights and colors |
 | `src/reports.{h,cpp}` | Lot counts and parts list, CSV + PDF (server routes; the dashboard now uses `static/js/reports.js`) |
