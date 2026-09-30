@@ -69,6 +69,16 @@ constexpr const char* kSessionCookie = "lugbulk_session";
 constexpr const char* kStateCookie = "lugbulk_oauth_state";
 constexpr size_t kMaxDisplayNameLen = 200;
 
+// A same-site redirect target as an absolute URL on the app's public
+// origin. Crow turns a relative Location into an absolute one using its
+// own (plain http) connection, which is wrong behind an https proxy —
+// giving it a full URL makes it leave the header alone.
+std::string app_origin(const Config& cfg);
+std::string local_url(const Config& cfg, const std::string& path) {
+    std::string origin = app_origin(cfg);
+    return origin.empty() ? path : origin + path;
+}
+
 // "https://host[:port]" of the app, from the OAuth redirect URI (the one
 // place the public origin is configured).
 std::string app_origin(const Config& cfg) {
@@ -573,7 +583,7 @@ int main() {
         auto user = current_user(*db, req);
         if (!user) {
             crow::response res(302);
-            res.set_header("Location", "/auth/login");
+            res.set_header("Location", local_url(cfg, "/auth/login"));
             return res;
         }
         // Mustache HTML-escapes {{email}} automatically, so a display name
@@ -688,7 +698,7 @@ int main() {
             db->trim_sessions(user.id, kMaxSessionsPerUser);
 
             crow::response res(302);
-            res.set_header("Location", "/");
+            res.set_header("Location", local_url(cfg, "/"));
             res.add_header("Set-Cookie", std::string(kSessionCookie) + "=" + session.token +
                                               "; " + cookie_attrs(cfg, kSessionTtlSeconds));
             // Clear the one-time state cookie now that the round trip is done.
@@ -710,7 +720,7 @@ int main() {
                 db->delete_session(*token);
             }
             crow::response res(302);
-            res.set_header("Location", "/");
+            res.set_header("Location", local_url(cfg, "/"));
             res.add_header("Set-Cookie",
                             std::string(kSessionCookie) + "=; " + clear_cookie_attrs(cfg));
             // Drop anything the browser kept from this session (on a shared
