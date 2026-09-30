@@ -14,16 +14,12 @@ namespace {
 constexpr const char* kAuthEndpoint = "https://accounts.google.com/o/oauth2/v2/auth";
 constexpr const char* kTokenEndpoint = "https://oauth2.googleapis.com/token";
 constexpr const char* kUserinfoEndpoint = "https://openidconnect.googleapis.com/v1/userinfo";
-constexpr const char* kDriveFilesEndpoint = "https://www.googleapis.com/drive/v3/files";
 constexpr const char* kSheetsValuesEndpoint = "https://sheets.googleapis.com/v4/spreadsheets/";
-// Read-only, and metadata-only for Drive: spreadsheets.readonly lets us
-// read sheet contents the user picks; drive.metadata.readonly lets us
-// list/search their spreadsheet files by name so they can pick one — it
-// does NOT grant reading file contents via the Drive API.
-constexpr const char* kScopes =
-    "openid email "
-    "https://www.googleapis.com/auth/spreadsheets.readonly "
-    "https://www.googleapis.com/auth/drive.metadata.readonly";
+// drive.file is Google's non-sensitive per-file scope: it covers only the
+// files the user opens with this app through the Google Picker, and
+// nothing else in their Drive. The Sheets API (values.get) works on those
+// files under it, so no restricted or sensitive scope is needed.
+constexpr const char* kScopes = "openid email https://www.googleapis.com/auth/drive.file";
 
 struct CurlGlobal {
     CurlGlobal() { curl_global_init(CURL_GLOBAL_DEFAULT); }
@@ -92,19 +88,6 @@ std::string http_post_form(const std::string& url, const std::string& body) {
     return response;
 }
 
-// Escapes a value for embedding inside a single-quoted string literal in a
-// Drive API `q` expression, per Drive's query syntax (backslash and single
-// quote are the only two characters that need escaping there).
-std::string drive_query_literal_escape(const std::string& s) {
-    std::string out;
-    out.reserve(s.size());
-    for (char c : s) {
-        if (c == '\\' || c == '\'') out.push_back('\\');
-        out.push_back(c);
-    }
-    return out;
-}
-
 std::string http_get_bearer(const std::string& url, const std::string& bearer_token) {
     std::unique_ptr<CURL, decltype(&curl_easy_cleanup)> curl(curl_easy_init(), &curl_easy_cleanup);
     if (!curl) throw std::runtime_error("oauth error: curl init failed");
@@ -141,6 +124,17 @@ std::string http_get_bearer(const std::string& url, const std::string& bearer_to
 
 }  // namespace
 
+bool has_scope(const std::string& scopes, const std::string& wanted) {
+    size_t pos = 0;
+    while (pos <= scopes.size()) {
+        size_t end = scopes.find(' ', pos);
+        if (end == std::string::npos) end = scopes.size();
+        if (end - pos == wanted.size() && scopes.compare(pos, end - pos, wanted) == 0) return true;
+        pos = end + 1;
+    }
+    return false;
+}
+
 std::string build_authorize_url(const Config& cfg, const std::string& state,
                                  bool force_consent) {
     std::unique_ptr<CURL, decltype(&curl_easy_cleanup)> curl(curl_easy_init(), &curl_easy_cleanup);
@@ -152,8 +146,10 @@ std::string build_authorize_url(const Config& cfg, const std::string& state,
                        "&response_type=code" +
                        "&scope=" + url_encode(curl.get(), kScopes) +
                        "&access_type=offline" +
-                       "&state=" + url_encode(curl.get(), state) +
-                       "&include_granted_scopes=true";
+                       "&state=" + url_encode(curl.get(), state);
+    // No include_granted_scopes: someone who signed in back when the app
+    // asked for spreadsheets.readonly + drive.metadata.readonly gets a token
+    // for drive.file alone, not one that carries the old scopes forward.
     if (force_consent) {
         url += "&prompt=consent";
     }
@@ -201,6 +197,7 @@ TokenResponse refresh_access_token(const Config& cfg, const std::string& refresh
     TokenResponse tr;
     tr.access_token = json["access_token"].s();
     if (json.has("expires_in")) tr.expires_in = json["expires_in"].i();
+    if (json.has("scope")) tr.scope = json["scope"].s();
     // Google normally does not re-issue a refresh_token on a refresh grant;
     // leave tr.refresh_token empty (caller keeps the one already stored).
     return tr;
@@ -218,50 +215,6 @@ UserInfo fetch_userinfo(const std::string& access_token) {
     info.email = json["email"].s();
     info.email_verified = json.has("email_verified") && json["email_verified"].t() == crow::json::type::True;
     return info;
-}
-
-std::vector<SheetFile> list_spreadsheets(const std::string& access_token,
-                                          const std::string& query, int limit) {
-    std::unique_ptr<CURL, decltype(&curl_easy_cleanup)> curl(curl_easy_init(), &curl_easy_cleanup);
-    if (!curl) throw std::runtime_error("oauth error: curl init failed");
-
-    if (limit <= 0 || limit > 100) limit = 25;
-
-    // mimeType filter restricts results to actual Google Sheets files (not
-    // arbitrary Drive files); trashed=false hides deleted-but-not-purged
-    // files. Search term, if any, is a case-insensitive `name contains`
-    // clause — the only user-controlled part of this expression, so it's
-    // escaped per Drive's query literal syntax before being embedded.
-    std::string q = "mimeType='application/vnd.google-apps.spreadsheet' and trashed=false";
-    if (!query.empty()) {
-        q += " and name contains '" + drive_query_literal_escape(query) + "'";
-    }
-
-    std::string url = std::string(kDriveFilesEndpoint) + "?" +
-                       "q=" + url_encode(curl.get(), q) +
-                       "&fields=" + url_encode(curl.get(), "files(id,name,modifiedTime)") +
-                       "&orderBy=" + url_encode(curl.get(), "modifiedTime desc") +
-                       "&pageSize=" + std::to_string(limit) +
-                       "&spaces=drive";
-
-    std::string response = http_get_bearer(url, access_token);
-
-    auto json = crow::json::load(response);
-    if (!json || !json.has("files")) {
-        throw std::runtime_error("oauth error: malformed Drive files response");
-    }
-
-    std::vector<SheetFile> results;
-    auto files = json["files"];
-    for (size_t i = 0; i < files.size(); ++i) {
-        auto f = files[i];
-        SheetFile sf;
-        sf.id = f.has("id") ? f["id"].s() : std::string();
-        sf.name = f.has("name") ? f["name"].s() : std::string();
-        sf.modified_time = f.has("modifiedTime") ? f["modifiedTime"].s() : std::string();
-        results.push_back(std::move(sf));
-    }
-    return results;
 }
 
 std::string fetch_spreadsheet_title(const std::string& access_token,

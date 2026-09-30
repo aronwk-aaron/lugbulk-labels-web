@@ -21,6 +21,7 @@
 #include "bricklink.h"
 #include "image_backdrop.h"
 #include "labels_pdf.h"
+#include "oauth.h"
 #include "rate_limits.h"
 #include "db.h"
 #include "samples.h"
@@ -518,6 +519,19 @@ void test_zip_writer() {
     }
 }
 
+void test_oauth_scopes() {
+    const std::string granted = "openid https://www.googleapis.com/auth/drive.file "
+                                "https://www.googleapis.com/auth/userinfo.email";
+    CHECK(oauth::has_scope(granted, oauth::kDriveFileScope));
+    CHECK(oauth::has_scope(granted, "openid"));
+    CHECK(!oauth::has_scope(granted, "https://www.googleapis.com/auth/drive"));
+    CHECK(!oauth::has_scope("", oauth::kDriveFileScope));
+    // A sign-in from before the Picker: the old scopes only.
+    CHECK(!oauth::has_scope("openid https://www.googleapis.com/auth/spreadsheets.readonly "
+                            "https://www.googleapis.com/auth/drive.metadata.readonly",
+                            oauth::kDriveFileScope));
+}
+
 int main() {
     layout::load_label_specs(LUGBULK_LABEL_SPECS_PATH);
     const std::pair<const char*, std::function<void()>> tests[] = {
@@ -535,6 +549,7 @@ int main() {
         {"label_specs", test_label_specs},
         {"spreadsheet_uploads", test_spreadsheet_uploads},
         {"zip_writer", test_zip_writer},
+        {"oauth_scopes", test_oauth_scopes},
         {"rate_limits", test_rate_limits},
         {"label_options_and_extras", test_label_options_and_extras},
         {"design_storage", test_design_storage},

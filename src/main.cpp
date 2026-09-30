@@ -7,7 +7,7 @@
 //   GET    /auth/login          kick off Google OAuth
 //   GET    /auth/callback       OAuth redirect target, stores refresh token
 //   POST   /auth/logout         clears the session
-//   GET    /sheets/search       search the user's Drive for spreadsheets (?q=)
+//   GET    /auth/picker-token   short-lived drive.file token + key/app id for the Google Picker
 //   GET    /sheets              list sheets the user has saved
 //   POST   /sheets              save a sheet the user picked (id + display name)
 //   DELETE /sheets/:row_id      remove a saved sheet
@@ -109,7 +109,8 @@ struct Guards {
     limits::RateLimiter per_ip{120, 10};
     // Sign-in routes, per client IP: 10, then one per 6 seconds.
     limits::RateLimiter auth_per_ip{10, 1.0 / 6};
-    // Drive searches, per user: 10, then one per 3 seconds.
+    // Google Picker tokens and adding sheets, per user: 10, then one per 3
+    // seconds.
     limits::RateLimiter search_per_user{10, 1.0 / 3};
     // Reports (and Check sheet), per user: 6, then one per 2 minutes.
     limits::RateLimiter jobs_per_user{6, 1.0 / 120};
@@ -208,11 +209,28 @@ JobAdmission enter_job_gate(int64_t gate_id) {
 
 // Content-Security-Policy. Scripts only run if they carry `nonce` (the
 // dashboard's own inline scripts); with no nonce, no script runs.
-std::string csp_for(const std::string& nonce) {
+// `google_picker` (the signed-in dashboard, with the Picker configured)
+// additionally lets the Google Picker load:
+//  - script-src https://apis.google.com: the Picker's loader (api.js, whose
+//    <script> tag we give the nonce) and the Picker modules that loader then
+//    injects itself, which can't carry our nonce. Only that one Google host
+//    is allowed, and no 'strict-dynamic', so the nonce still gates
+//    everything else.
+//  - frame-src https://docs.google.com: the Picker dialog is an iframe
+//    served from there. blob: stays for the PDF preview.
+// connect-src isn't set, so it falls back to default-src 'self': fetch()
+// still only reaches this app (the Picker talks to Google from inside its
+// own iframe, not from our page).
+std::string csp_for(const std::string& nonce, bool google_picker = false) {
     std::string script = nonce.empty() ? "'none'" : "'nonce-" + nonce + "'";
+    std::string frames = "blob:";
+    if (google_picker && !nonce.empty()) {
+        script += " https://apis.google.com";
+        frames += " https://docs.google.com";
+    }
     return "default-src 'self'; script-src " + script + "; style-src 'self' 'unsafe-inline'; "
-           "img-src 'self' data:; frame-src blob:; object-src 'none'; frame-ancestors 'none'; "
-           "base-uri 'none'; form-action 'self'";
+           "img-src 'self' data:; frame-src " + frames + "; object-src 'none'; "
+           "frame-ancestors 'none'; base-uri 'none'; form-action 'self'";
 }
 
 // Whether a request's Origin header is this app. Compared to the configured
@@ -348,8 +366,8 @@ struct ReauthRequired : std::runtime_error {
 // logs; the decrypted refresh token similarly never leaves this function's
 // stack. Throws ReauthRequired if the stored refresh token is missing,
 // undecryptable, or rejected by Google; std::runtime_error on transport
-// failures.
-std::string mint_access_token(const Config& cfg, Db& db, int64_t user_id) {
+// failures. mint_token also returns the granted scopes.
+oauth::TokenResponse mint_token(const Config& cfg, Db& db, int64_t user_id) {
     auto enc = db.get_refresh_token_enc(user_id);
     if (!enc || enc->empty()) {
         throw ReauthRequired("no stored Google refresh token for this user");
@@ -361,11 +379,15 @@ std::string mint_access_token(const Config& cfg, Db& db, int64_t user_id) {
         throw ReauthRequired(std::string("stored refresh token unusable: ") + e.what());
     }
     try {
-        return oauth::refresh_access_token(cfg, refresh_token).access_token;
+        return oauth::refresh_access_token(cfg, refresh_token);
     } catch (const oauth::HttpError& e) {
         // 400 invalid_grant: revoked or expired on Google's side.
         throw ReauthRequired(std::string("refresh grant rejected: ") + e.what());
     }
+}
+
+std::string mint_access_token(const Config& cfg, Db& db, int64_t user_id) {
+    return mint_token(cfg, db, user_id).access_token;
 }
 
 // JSON string escaping for values we interpolate into hand-built JSON
@@ -517,6 +539,13 @@ std::optional<EffectiveDesign> resolve_design(const std::optional<Design>& saved
     return EffectiveDesign{spec, *order, *options};
 }
 
+// A sheet Google won't let us read. With the drive.file scope the app can
+// only open sheets the user chose with the Google Picker.
+constexpr const char* kRepickMessage =
+    "Google won't let this app open the sheet. Choose it again with \"Pick a Google "
+    "Sheet…\" (the app can only read sheets you've picked there), and check it's still "
+    "shared with your Google account.";
+
 // Turns a failed Google call into a response the organizer can act on.
 crow::response google_error(const std::exception& e) {
     if (auto* big = dynamic_cast<const TooBig*>(&e)) {
@@ -532,10 +561,13 @@ crow::response google_error(const std::exception& e) {
                 return crow::response(502, std::string("Google couldn't read the '") +
                                                layout::kSourceTab +
                                                "' tab — check the sheet has a tab by that name.");
+            case 401:
             case 403:
             case 404:
-                return crow::response(502, "Google says this sheet doesn't exist or isn't shared "
-                                           "with your Google account.");
+                // Besides a sheet that's gone or unshared, this is what a
+                // sheet saved before the switch to drive.file looks like:
+                // the app may only read sheets chosen with the Picker.
+                return crow::response(502, kRepickMessage);
             default:
                 break;
         }
@@ -716,6 +748,10 @@ int main() {
     bricklink::CatalogCache catalog(cfg.data_dir + "/bricklink");
     g_catalog = &catalog;
     catalog.get();  // load (and log) now rather than on the first report
+    if (cfg.google_enabled() && !cfg.picker_enabled()) {
+        std::cerr << "warning: GOOGLE_API_KEY and GOOGLE_APP_ID are not both set — signed-in "
+                     "users can't add Google Sheets (the Google Picker is off)" << std::endl;
+    }
     if (cfg.google_enabled() && guards.allowlist.empty()) {
         std::cerr << "warning: ALLOWED_EMAILS is not set — any Google account that can pass "
                      "the OAuth consent screen can sign in" << std::endl;
@@ -754,6 +790,7 @@ int main() {
         ctx["nonce"] = nonce;
         ctx["signed_in"] = user.has_value();
         ctx["google"] = cfg.google_enabled();
+        ctx["picker"] = cfg.picker_enabled();
         ctx["email"] = user ? user->email : std::string();
         ctx["version"] = version;
         // Label stock picker: one <optgroup> per brand + page size.
@@ -791,7 +828,7 @@ int main() {
         ctx["spec_groups"] = std::move(groups);
         crow::response res(200, tmpl.render(ctx));
         res.set_header("Content-Type", "text/html; charset=utf-8");
-        res.set_header("Content-Security-Policy", csp_for(nonce));
+        res.set_header("Content-Security-Policy", csp_for(nonce, user && cfg.picker_enabled()));
         return res;
     });
 
@@ -893,44 +930,44 @@ int main() {
             return res;
         });
 
-    // Search/list the user's own Drive for spreadsheets they can pick from
-    // (does not touch our `sheets` table — this is live Drive metadata,
-    // not what's already saved). `?q=` is an optional name substring.
-    CROW_ROUTE(app, "/sheets/search")([&cfg, &db](const crow::request& req) {
+    // What the dashboard's Google Picker needs: a fresh access token plus the
+    // browser API key and Cloud project number. The token is minted from the
+    // stored refresh token and only carries drive.file (per-file access to
+    // what the user picks with this app) plus basic profile, so handing it
+    // to the user's own page is fine; it's never stored or logged.
+    CROW_ROUTE(app, "/auth/picker-token")([&cfg, &db](const crow::request& req) {
         auto user = current_user(*db, req);
         if (!user) return crow::response(401, "not logged in");
-
-        if (auto retry = g_guards->search_per_user.take(std::to_string(user->id))) {
-            return too_many(*retry, "Searching too fast — wait a few seconds.");
+        if (!cfg.picker_enabled()) {
+            return crow::response(404, "The Google Picker isn't set up on this server.");
         }
-        std::string query;
-        if (auto q = req.url_params.get("q")) query = q;
-        if (query.size() > 200) return crow::response(400, "search text too long");
-
+        if (auto retry = g_guards->search_per_user.take(std::to_string(user->id))) {
+            return too_many(*retry, "Too many requests — wait a few seconds.");
+        }
         try {
-            std::string access_token = mint_access_token(cfg, *db, user->id);
-            std::vector<oauth::SheetFile> files = oauth::list_spreadsheets(access_token, query);
-
-            std::string body = "{\"files\":[";
-            for (size_t i = 0; i < files.size(); ++i) {
-                if (i > 0) body += ",";
-                body += "{\"id\":\"" + json_escape(files[i].id) + "\",";
-                body += "\"name\":\"" + json_escape(files[i].name) + "\",";
-                body += "\"modifiedTime\":\"" + json_escape(files[i].modified_time) + "\"}";
+            oauth::TokenResponse token = mint_token(cfg, *db, user->id);
+            // Signed in before the switch to drive.file: the stored grant
+            // has the old scopes only. 401 sends the page to /auth/login,
+            // which asks for drive.file with prompt=consent.
+            if (!token.scope.empty() && !oauth::has_scope(token.scope, oauth::kDriveFileScope)) {
+                return crow::response(401, "Sign in again to allow the Google Picker.");
             }
-            body += "]}";
-
-            crow::response res(200, body);
+            crow::json::wvalue body;
+            body["access_token"] = token.access_token;
+            body["api_key"] = cfg.google_api_key;
+            body["app_id"] = cfg.google_app_id;
+            crow::response res(200, body.dump());
             res.set_header("Content-Type", "application/json");
+            res.set_header("Cache-Control", "no-store");
             return res;
         } catch (const ReauthRequired& e) {
-            std::cerr << "sheets/search needs re-login for user " << user->id << ": " << e.what()
-                      << std::endl;
+            std::cerr << "auth/picker-token needs re-login for user " << user->id << ": "
+                      << e.what() << std::endl;
             return google_error(e);
         } catch (const std::exception& e) {
-            std::cerr << "sheets/search failed for user " << user->id << ": " << e.what()
-                       << std::endl;
-            return crow::response(502, "could not search Google Drive, please try again");
+            std::cerr << "auth/picker-token failed for user " << user->id << ": " << e.what()
+                      << std::endl;
+            return crow::response(502, "Couldn't reach Google — try again in a minute.");
         }
     });
 
@@ -954,7 +991,7 @@ int main() {
         return res;
     });
 
-    // Save a sheet the user picked from /sheets/search results. Body:
+    // Save a sheet the user chose with the Google Picker. Body:
     // {"sheet_id": "...", "display_name": "..."}. We deliberately don't
     // re-verify the sheet_id against Drive here — the Sheets-read call at
     // generate time will fail cleanly if it's bogus or access was revoked,
@@ -1277,7 +1314,7 @@ int main() {
                 } catch (const std::exception& e) {
                     if (auto* http = dynamic_cast<const oauth::HttpError*>(&e);
                         http && (http->status == 403 || http->status == 404)) {
-                        return crow::response(403, "Your Google account can't open this sheet.");
+                        return crow::response(403, kRepickMessage);
                     }
                     return google_error(e);
                 }
