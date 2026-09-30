@@ -56,17 +56,19 @@ estimate from the description's stud dimensions (`PLATE 4X8`,
 
 ### BrickLink (optional)
 
-Set `BRICKLINK_CONSUMER_KEY`, `BRICKLINK_CONSUMER_SECRET`,
-`BRICKLINK_TOKEN` and `BRICKLINK_TOKEN_SECRET` (see `.env.example`) to
-look each part up on BrickLink: catalog weight for part order, and the
-BrickLink color for any the sheet is missing. When a sheet is added, its
-parts are looked up in the background so the first print doesn't wait. Get them from BrickLink's
-[API registration](https://www.bricklink.com/v2/api/register_consumer.page)
-(may require a — possibly closed — store); the access token must be
-created for the **server's** public IP. Lookups are cached in the
-`bricklink_parts` table (misses retried after a week), so each part costs
-two API calls once. Without credentials, or if BrickLink refuses them
-(logged to stderr), weights are estimated.
+Real part weights (for part order) and BrickLink color names (for colors a
+sheet is missing) come from BrickLink's catalog download — its API is for
+sellers only, but any free account can download the catalog at
+[bricklink.com/catalogDownload.asp](https://www.bricklink.com/catalogDownload.asp)
+as **Tab-Delimited File**:
+
+1. **Catalog Items → Parts**, with **Include Weight** ticked;
+2. **Part and Color Codes**.
+
+Put both in `<data dir>/bricklink/` (e.g.
+`/mnt/user/appdata/lugbulk-labels-web/bricklink/`). Any file names work —
+they're recognised by their header row — and replacing them is picked up
+automatically on the next report. Without them, weights are estimated.
 
 ## Stack
 
@@ -132,7 +134,6 @@ any one person — or script — can make it do:
 | Sheet size | 3,000 rows read; 20,000 labels / 2,000 parts per run; 32 MB Google response |
 | Saved sheets | 50 per user (only sheets your Google account can open); 10 sessions per user |
 | Preview / test page / design saves | 20, then 1/second, per user |
-| BrickLink | 300 new lookups per run, `BRICKLINK_DAILY_CALLS` (default 4,000) per day server-wide |
 | Part photos | only digit element IDs, only from LEGO's CDN over HTTPS, 2 MB max |
 
 Behind a reverse proxy, set `TRUST_PROXY=1` so limits apply per visitor
@@ -285,7 +286,7 @@ or with the compose file: `LUGBULK_TAG=canary docker compose pull && docker comp
 | `src/ordering.{h,cpp}` | Part weight estimates, label order, "N of M" numbering, per-part summaries |
 | `src/labels_pdf.{h,cpp}` | Label PDF rendering and the shared part-photo cache |
 | `src/image_backdrop.{h,cpp}` | Gray-tile treatment for trans/white part photos |
-| `src/bricklink.{h,cpp}` | BrickLink API client (OAuth 1.0): weights and colors |
+| `src/bricklink.{h,cpp}` | Reads BrickLink's catalog download files: weights and colors |
 | `src/reports.{h,cpp}` | Lot counts and parts list, CSV + PDF |
 | `src/pdf_text.{h,cpp}` | UTF-8 → WinAnsi for PDF text |
 | `tests/tests.cpp` | Unit tests (`ctest`) |
@@ -293,7 +294,7 @@ or with the compose file: `LUGBULK_TAG=canary docker compose pull && docker comp
 | `sql/schema.sql` | SQLite schema: users, sheets, runs, sessions |
 | `templates/dashboard.html` | Mustache template for the logged-in dashboard page (Crow's bundled `crow::mustache`) |
 | `Dockerfile` | Multi-stage build (Debian bookworm base); tests run during the build |
-| `src/rate_limits.{h,cpp}` | Rate limiter, job gate, daily budget, sign-in allowlist |
+| `src/rate_limits.{h,cpp}` | Rate limiter, job gate, sign-in allowlist |
 | `cmake/patch_crow.cmake` | Caps Crow's request body size |
 | `docker/entrypoint.sh` | Fixes `/data` ownership, then drops to the `lugbulk` user |
 | `.github/workflows/docker-publish.yml` | CI: builds, tests, publishes the image to GHCR, and creates canary/versioned GitHub releases |

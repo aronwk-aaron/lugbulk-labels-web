@@ -48,15 +48,6 @@ struct Run {
     std::string error_message;
 };
 
-// A cached BrickLink catalog lookup (see src/bricklink.h).
-struct BrickLinkPart {
-    std::string element_id;
-    std::string part_no;  // empty if BrickLink doesn't know the element
-    std::string color;
-    std::optional<double> weight;
-    int64_t fetched_at;  // unix time
-};
-
 // Mirrors the `sheets` row's owner check needed before generating against it.
 struct SheetOwnership {
     int64_t sheet_row_id;
@@ -131,10 +122,6 @@ public:
     // Label design for a Google Sheet, shared across users; nullopt if none saved.
     std::optional<Design> get_design(const std::string& google_sheet_id);
     void put_design(const std::string& google_sheet_id, const Design& design, int64_t user_id);
-
-    // BrickLink lookup cache.
-    std::map<std::string, BrickLinkPart> get_bricklink_parts(const std::vector<std::string>& element_ids);
-    void put_bricklink_part(const BrickLinkPart& part);
 
 private:
     void migrate();

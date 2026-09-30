@@ -76,20 +76,6 @@ JobGate::Ticket::~Ticket() {
     if (gate_) gate_->leave(user_);
 }
 
-DailyBudget::DailyBudget(int per_day) : per_day_(per_day) {}
-
-int DailyBudget::take(int want) {
-    int64_t today = static_cast<int64_t>(std::time(nullptr)) / 86400;
-    std::lock_guard<std::mutex> lock(mu_);
-    if (today != day_) {
-        day_ = today;
-        used_ = 0;
-    }
-    int granted = std::clamp(per_day_ - used_, 0, std::max(0, want));
-    used_ += granted;
-    return granted;
-}
-
 Allowlist::Allowlist(const std::string& comma_separated) {
     std::stringstream ss(comma_separated);
     for (std::string item; std::getline(ss, item, ',');) {
