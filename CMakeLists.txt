@@ -11,6 +11,9 @@ FetchContent_Declare(
     Crow
     GIT_REPOSITORY https://github.com/CrowCpp/Crow.git
     GIT_TAG v1.2.0
+    # Cap request body size (see cmake/patch_crow.cmake).
+    PATCH_COMMAND ${CMAKE_COMMAND} -DCROW_SOURCE_DIR=<SOURCE_DIR>
+                  -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/patch_crow.cmake
 )
 set(CROW_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
 set(CROW_BUILD_TESTS OFF CACHE BOOL "" FORCE)
@@ -46,6 +49,7 @@ add_library(lugbulk_core STATIC
     src/sheet_pivot.cpp
     src/reports.cpp
     src/labels_pdf.cpp
+    src/rate_limits.cpp
     src/pdf_text.cpp
 )
 

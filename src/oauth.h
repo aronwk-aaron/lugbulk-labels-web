@@ -30,6 +30,7 @@ struct TokenResponse {
 };
 
 struct UserInfo {
+    bool email_verified = false;
     std::string sub;    // stable Google account id
     std::string email;
 };

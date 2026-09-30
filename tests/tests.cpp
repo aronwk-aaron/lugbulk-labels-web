@@ -19,6 +19,7 @@
 #include "bricklink.h"
 #include "image_backdrop.h"
 #include "labels_pdf.h"
+#include "rate_limits.h"
 #include "ordering.h"
 #include "reports.h"
 #include "sheet_layout.h"
@@ -329,6 +330,41 @@ void test_label_specs() {
     }
 }
 
+void test_rate_limits() {
+    limits::RateLimiter rl(3, 1.0 / 60);  // 3 at once, then one a minute
+    CHECK(!rl.take("a") && !rl.take("a") && !rl.take("a"));
+    auto retry = rl.take("a");
+    CHECK(retry.has_value() && *retry > 0 && *retry <= 60);
+    CHECK(!rl.take("b"));  // keys are independent
+
+    limits::JobGate gate(2);
+    {
+        auto a = gate.enter(1);
+        CHECK(a.ticket.has_value());
+        auto again = gate.enter(1);
+        CHECK(!again.ticket && again.refusal == limits::JobGate::Refusal::kUserBusy);
+        auto b = gate.enter(2);
+        CHECK(b.ticket.has_value());
+        auto c = gate.enter(3);
+        CHECK(!c.ticket && c.refusal == limits::JobGate::Refusal::kServerBusy);
+    }
+    CHECK(gate.enter(3).ticket.has_value());  // tickets released on scope exit
+
+    limits::DailyBudget budget(10);
+    CHECK_EQ(budget.take(6), 6);
+    CHECK_EQ(budget.take(6), 4);
+    CHECK_EQ(budget.take(1), 0);
+
+    limits::Allowlist open("");
+    CHECK(open.allows("anyone@example.com"));
+    limits::Allowlist list(" Ann@Example.com, @lug.org ");
+    CHECK(list.allows("ann@example.com"));
+    CHECK(list.allows("BOB@lug.org"));
+    CHECK(!list.allows("bob@example.com"));
+    CHECK(!list.allows("ann@example.com.evil.com"));
+    CHECK(!list.allows("@lug.org"));
+}
+
 int main() {
     layout::load_label_specs(LUGBULK_LABEL_SPECS_PATH);
     const std::pair<const char*, std::function<void()>> tests[] = {
@@ -344,6 +380,7 @@ int main() {
         {"bricklink_oauth_signature", test_bricklink_oauth_signature},
         {"placeholder_color_and_catalog_weight", test_placeholder_color_and_catalog_weight},
         {"label_specs", test_label_specs},
+        {"rate_limits", test_rate_limits},
         {"labels_pdf_every_spec", test_labels_pdf_every_spec},
     };
     for (const auto& [name, fn] : tests) {

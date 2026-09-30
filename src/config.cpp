@@ -19,6 +19,17 @@ std::string optional_env(const char* name, const std::string& fallback) {
     return (v && *v != '\0') ? std::string(v) : fallback;
 }
 
+int positive_int_env(const char* name, int fallback) {
+    std::string v = optional_env(name, "");
+    if (v.empty()) return fallback;
+    try {
+        int n = std::stoi(v);
+        if (n > 0) return n;
+    } catch (const std::exception&) {
+    }
+    throw std::runtime_error(std::string("env var ") + name + " must be a positive integer");
+}
+
 }  // namespace
 
 Config Config::load_from_env() {
@@ -29,6 +40,10 @@ Config Config::load_from_env() {
         optional_env("GOOGLE_OAUTH_REDIRECT_URI", "http://localhost:8080/auth/callback");
     cfg.token_encryption_key_b64 = require_env("TOKEN_ENCRYPTION_KEY");
     cfg.data_dir = optional_env("LUGBULK_DATA_DIR", ".");
+    cfg.allowed_emails = optional_env("ALLOWED_EMAILS", "");
+    cfg.trust_proxy = optional_env("TRUST_PROXY", "") == "1";
+    cfg.max_concurrent_jobs = positive_int_env("MAX_CONCURRENT_JOBS", 2);
+    cfg.bricklink_daily_calls = positive_int_env("BRICKLINK_DAILY_CALLS", 4000);
     cfg.bricklink.consumer_key = optional_env("BRICKLINK_CONSUMER_KEY", "");
     cfg.bricklink.consumer_secret = optional_env("BRICKLINK_CONSUMER_SECRET", "");
     cfg.bricklink.token = optional_env("BRICKLINK_TOKEN", "");

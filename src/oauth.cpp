@@ -32,8 +32,14 @@ struct CurlGlobal {
 // Initialized once at process start (constructed on first use of this TU).
 const CurlGlobal g_curl_global;
 
+// Largest Google API response we'll buffer. A capped "Order Here" range
+// is a few MB at most; anything bigger aborts the transfer rather than
+// growing without bound.
+constexpr size_t kMaxResponseBytes = 32 * 1024 * 1024;
+
 size_t write_cb(char* ptr, size_t size, size_t nmemb, void* userdata) {
     auto* out = static_cast<std::string*>(userdata);
+    if (out->size() + size * nmemb > kMaxResponseBytes) return 0;  // curl aborts: CURLE_WRITE_ERROR
     out->append(ptr, size * nmemb);
     return size * nmemb;
 }
@@ -210,6 +216,7 @@ UserInfo fetch_userinfo(const std::string& access_token) {
     UserInfo info;
     info.sub = json["sub"].s();
     info.email = json["email"].s();
+    info.email_verified = json.has("email_verified") && json["email_verified"].t() == crow::json::type::True;
     return info;
 }
 

@@ -19,6 +19,17 @@ struct Config {
     // _CONSUMER_SECRET / _TOKEN / _TOKEN_SECRET): part weights for label
     // order, and colors a sheet is missing. Unset = estimate weights.
     bricklink::Credentials bricklink;
+    // ALLOWED_EMAILS: comma-separated addresses and/or "@domain"s allowed to
+    // sign in. Empty = any Google account (see limits::Allowlist).
+    std::string allowed_emails;
+    // TRUST_PROXY=1: take the client IP from X-Forwarded-For (only behind a
+    // reverse proxy that sets it; otherwise clients could spoof it).
+    bool trust_proxy = false;
+    // MAX_CONCURRENT_JOBS: report generations running at once, server-wide.
+    int max_concurrent_jobs = 2;
+    // BRICKLINK_DAILY_CALLS: BrickLink API calls allowed per UTC day
+    // (BrickLink's own limit is 5,000).
+    int bricklink_daily_calls = 4000;
 
     // Reads required env vars, throws std::runtime_error naming the missing
     // key (never the value) if something required is absent.

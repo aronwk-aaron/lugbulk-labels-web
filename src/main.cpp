@@ -41,6 +41,7 @@
 #include "crypto.h"
 #include "db.h"
 #include "labels_pdf.h"
+#include "rate_limits.h"
 #include "oauth.h"
 #include "ordering.h"
 #include "reports.h"
@@ -73,11 +74,102 @@ std::string app_origin(const Config& cfg) {
 //  - A same-origin check on state-changing requests. SameSite=Lax cookies
 //    already keep cross-site POSTs unauthenticated; this is belt and braces
 //    for older browsers.
+// Size limits on what one request may make the server do.
+constexpr int kMaxSheetRows = 3000;       // rows fetched from the "Order Here" tab
+constexpr size_t kMaxLabels = 20000;      // labels in one run
+constexpr size_t kMaxParts = 2000;        // distinct parts in one run (photo downloads)
+constexpr size_t kMaxSavedSheets = 50;    // per user
+constexpr size_t kMaxBrickLinkLookups = 300;  // new BrickLink lookups per run
+constexpr int kMaxSessionsPerUser = 10;
+
+// Rate limits and caps shared by every request (see rate_limits.h). Built once
+// in main() from the config.
+struct Guards {
+    // Any request, per client IP: bursts of 120 (a dashboard load is one
+    // request per saved sheet), then 10/second.
+    limits::RateLimiter per_ip{120, 10};
+    // Sign-in routes, per client IP: 10, then one per 6 seconds.
+    limits::RateLimiter auth_per_ip{10, 1.0 / 6};
+    // Drive searches, per user: 10, then one per 3 seconds.
+    limits::RateLimiter search_per_user{10, 1.0 / 3};
+    // Reports (and Check sheet), per user: 6, then one per 2 minutes.
+    limits::RateLimiter jobs_per_user{6, 1.0 / 120};
+    limits::JobGate jobs;
+    limits::DailyBudget bricklink_calls;
+    limits::Allowlist allowlist;
+    bool trust_proxy;
+
+    explicit Guards(const Config& cfg)
+        : jobs(cfg.max_concurrent_jobs),
+          bricklink_calls(cfg.bricklink_daily_calls),
+          allowlist(cfg.allowed_emails),
+          trust_proxy(cfg.trust_proxy) {}
+};
+Guards* g_guards = nullptr;  // set in main() before the server starts
+
+// The client's IP: the socket peer, or with TRUST_PROXY the first address
+// in X-Forwarded-For (the proxy is then the socket peer).
+std::string client_ip(const crow::request& req) {
+    if (g_guards && g_guards->trust_proxy) {
+        std::string xff = req.get_header_value("X-Forwarded-For");
+        if (!xff.empty()) {
+            std::string first = xff.substr(0, xff.find(','));
+            first.erase(0, first.find_first_not_of(' '));
+            first.erase(first.find_last_not_of(' ') + 1);
+            if (!first.empty()) return first;
+        }
+    }
+    return req.remote_ip_address;
+}
+
+crow::response too_many(int retry_after, const std::string& message) {
+    crow::response res(429, message);
+    res.set_header("Retry-After", std::to_string(std::max(1, retry_after)));
+    return res;
+}
+
+// Admission for an expensive request (a report or Check sheet): the
+// user's rate limit, then one job per user and MAX_CONCURRENT_JOBS
+// server-wide. Refusals are immediate — nothing queues on a worker thread.
+struct JobAdmission {
+    std::optional<limits::JobGate::Ticket> ticket;
+    crow::response refused;
+};
+
+JobAdmission start_job(int64_t user_id) {
+    JobAdmission a;
+    if (auto retry = g_guards->jobs_per_user.take(std::to_string(user_id))) {
+        a.refused = too_many(*retry, "That's a lot of reports in a short time — try again in " +
+                                         std::to_string(*retry) + " seconds.");
+        return a;
+    }
+    auto result = g_guards->jobs.enter(user_id);
+    if (!result.ticket) {
+        a.refused = result.refusal == limits::JobGate::Refusal::kUserBusy
+                        ? too_many(5, "You already have a report running — wait for it to finish.")
+                        : too_many(10, "The server is busy with other reports — try again in a "
+                                       "few seconds.");
+        return a;
+    }
+    a.ticket.emplace(std::move(*result.ticket));
+    return a;
+}
+
 struct SecurityMiddleware {
     struct context {};
     std::string origin;  // set in main() from the config
 
     void before_handle(crow::request& req, crow::response& res, context&) {
+        if (g_guards && req.url != "/healthz") {
+            std::string ip = client_ip(req);
+            auto retry = g_guards->per_ip.take(ip);
+            if (!retry && req.url.rfind("/auth/", 0) == 0) retry = g_guards->auth_per_ip.take(ip);
+            if (retry) {
+                res = too_many(*retry, "Too many requests — slow down and try again shortly.");
+                res.end();
+                return;
+            }
+        }
         if (req.method == crow::HTTPMethod::Get || req.method == crow::HTTPMethod::Head) return;
         std::string req_origin = req.get_header_value("Origin");
         if (!req_origin.empty() && !origin.empty() && req_origin != origin) {
@@ -153,7 +245,11 @@ std::optional<std::string> get_cookie(const crow::request& req, const std::strin
 std::optional<User> current_user(Db& db, const crow::request& req) {
     auto token = get_cookie(req, kSessionCookie);
     if (!token) return std::nullopt;
-    return db.find_user_by_session(*token);
+    auto user = db.find_user_by_session(*token);
+    // Taking someone off ALLOWED_EMAILS locks them out at once, not when
+    // their session expires.
+    if (user && g_guards && !g_guards->allowlist.allows(user->email)) return std::nullopt;
+    return user;
 }
 
 // The user's stored Google authorization is gone or unusable (never stored,
@@ -245,6 +341,19 @@ void apply_bricklink(const Config& cfg, Db& db, PivotResult& pivot) {
                      (it->second.weight || now - it->second.fetched_at < kMissRetrySeconds);
         if (!fresh) todo.push_back(id);
     }
+    // Two API calls per lookup; stay inside the per-run cap and the
+    // server's daily share of BrickLink's quota. Anything left over is
+    // looked up on a later run.
+    if (todo.size() > kMaxBrickLinkLookups) todo.resize(kMaxBrickLinkLookups);
+    if (!todo.empty()) {
+        int granted = g_guards ? g_guards->bricklink_calls.take(static_cast<int>(todo.size()) * 2) / 2
+                               : static_cast<int>(todo.size());
+        if (granted < static_cast<int>(todo.size())) {
+            std::cerr << "bricklink: daily call budget reached; " << todo.size() - granted
+                      << " lookups deferred" << std::endl;
+        }
+        todo.resize(static_cast<size_t>(granted));
+    }
 
     if (!todo.empty()) {
         std::mutex mu;
@@ -290,6 +399,11 @@ void apply_bricklink(const Config& cfg, Db& db, PivotResult& pivot) {
     });
 }
 
+// A sheet over the per-run size limits.
+struct TooBig : std::runtime_error {
+    using std::runtime_error::runtime_error;
+};
+
 // Fetches the "Order Here" tab for a sheet the user owns, pivots it, and
 // adds BrickLink data. Shared by every generate route. Throws std::runtime_error (from
 // mint_access_token / oauth calls) on any Google API failure — callers turn
@@ -300,16 +414,30 @@ PivotResult fetch_and_pivot(const Config& cfg, Db& db, int64_t user_id,
     // Column count has grown across sheet years (2023: 93 cols -> 2026: 98
     // cols, as the roster grows) — ZZ (702 columns) gives a wide margin
     // against a fixed cutoff silently truncating future, larger rosters.
-    std::string range = "'" + std::string(layout::kSourceTab) + "'!A1:ZZ";
+    // Rows are capped too: a real order sheet is ~100 rows, and a sheet
+    // of millions shouldn't be able to exhaust the server's memory.
+    std::string range = "'" + std::string(layout::kSourceTab) + "'!A1:ZZ" +
+                        std::to_string(kMaxSheetRows);
     std::vector<std::vector<std::string>> rows =
         oauth::fetch_sheet_values(access_token, spreadsheet_id, range);
     PivotResult pivot = pivot_sheet(rows);
+    std::set<std::string> parts;
+    for (const auto& r : pivot.records) parts.insert(r.element_id);
+    if (pivot.records.size() > kMaxLabels || parts.size() > kMaxParts) {
+        throw TooBig("this sheet has " + std::to_string(pivot.records.size()) + " labels and " +
+                     std::to_string(parts.size()) + " parts; the limit is " +
+                     std::to_string(kMaxLabels) + " labels / " + std::to_string(kMaxParts) +
+                     " parts per run");
+    }
     apply_bricklink(cfg, db, pivot);
     return pivot;
 }
 
 // Turns a failed Google call into a response the organizer can act on.
 crow::response google_error(const std::exception& e) {
+    if (auto* big = dynamic_cast<const TooBig*>(&e)) {
+        return crow::response(413, std::string("Too big: ") + big->what() + ".");
+    }
     if (dynamic_cast<const ReauthRequired*>(&e)) {
         return crow::response(401, "Your Google access has expired or was revoked — log out "
                                    "and log back in.");
@@ -399,6 +527,13 @@ int main() {
 
     // Clear out sessions that expired while the server was down.
     db->delete_expired_sessions();
+
+    Guards guards(cfg);
+    g_guards = &guards;
+    if (guards.allowlist.empty()) {
+        std::cerr << "warning: ALLOWED_EMAILS is not set — any Google account that can pass "
+                     "the OAuth consent screen can sign in" << std::endl;
+    }
 
     App app;
     app.get_middleware<SecurityMiddleware>().origin = app_origin(cfg);
@@ -508,6 +643,13 @@ int main() {
         try {
             oauth::TokenResponse tokens = oauth::exchange_code(cfg, code);
             oauth::UserInfo info = oauth::fetch_userinfo(tokens.access_token);
+            if (!info.email_verified || !g_guards->allowlist.allows(info.email)) {
+                // Nothing is stored for a refused account.
+                std::cerr << "auth/callback: sign-in refused for a non-allowlisted account"
+                          << std::endl;
+                return crow::response(403, "This Google account isn't allowed to use this app — "
+                                           "ask the organizer to add it.");
+            }
 
             User user{};
             if (!tokens.refresh_token.empty()) {
@@ -525,6 +667,7 @@ int main() {
 
             db->delete_expired_sessions();
             Session session = db->create_session(user.id, kSessionTtlSeconds);
+            db->trim_sessions(user.id, kMaxSessionsPerUser);
 
             crow::response res(302);
             res.set_header("Location", "/");
@@ -562,8 +705,12 @@ int main() {
         auto user = current_user(*db, req);
         if (!user) return crow::response(401, "not logged in");
 
+        if (auto retry = g_guards->search_per_user.take(std::to_string(user->id))) {
+            return too_many(*retry, "Searching too fast — wait a few seconds.");
+        }
         std::string query;
         if (auto q = req.url_params.get("q")) query = q;
+        if (query.size() > 200) return crow::response(400, "search text too long");
 
         try {
             std::string access_token = mint_access_token(cfg, *db, user->id);
@@ -635,6 +782,10 @@ int main() {
                 return crow::response(400, "display_name must be 1-200 characters");
             }
 
+            if (db->count_sheets(user->id) >= kMaxSavedSheets) {
+                return crow::response(409, "You have " + std::to_string(kMaxSavedSheets) +
+                                               " saved sheets — remove one first.");
+            }
             try {
                 Sheet saved = db->add_sheet(user->id, sheet_id, display_name);
                 std::string body = "{\"row_id\":" + std::to_string(saved.id) + ",";
@@ -667,6 +818,8 @@ int main() {
         if (!user) return crow::response(401, "not logged in");
         auto owned = db->find_owned_sheet(user->id, row_id);
         if (!owned) return crow::response(404, "sheet not found");
+        auto ticket = start_job(user->id);
+        if (!ticket.ticket) return std::move(ticket.refused);
 
         try {
             PivotResult pivot = fetch_and_pivot(cfg, *db, user->id, owned->sheet_id);
@@ -714,6 +867,8 @@ int main() {
         if (!user) return crow::response(401, "not logged in");
         auto owned = db->find_owned_sheet(user->id, row_id);
         if (!owned) return crow::response(404, "sheet not found");
+        auto ticket = start_job(user->id);
+        if (!ticket.ticket) return std::move(ticket.refused);
 
         PivotResult pivot;
         try {

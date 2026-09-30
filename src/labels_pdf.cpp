@@ -31,9 +31,13 @@ constexpr double kMmToPt = 72.0 / 25.4;
 constexpr int kImageFetchWorkers = 8;
 constexpr long kMissRetrySeconds = 24 * 60 * 60;
 
+// A part photo is ~5 KB; refuse anything absurd.
+constexpr size_t kMaxImageBytes = 2 * 1024 * 1024;
+
 size_t curl_write_cb(char* ptr, size_t size, size_t nmemb, void* userdata) {
     auto* out = static_cast<std::vector<uint8_t>*>(userdata);
     size_t n = size * nmemb;
+    if (out->size() + n > kMaxImageBytes) return 0;  // curl aborts the download
     out->insert(out->end(), ptr, ptr + n);
     return n;
 }

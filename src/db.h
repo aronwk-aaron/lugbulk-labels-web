@@ -90,12 +90,15 @@ public:
     std::optional<User> find_user_by_session(const std::string& token);
     void delete_session(const std::string& token);
     void delete_expired_sessions();
+    // Deletes all but the newest `keep` sessions of a user.
+    void trim_sessions(int64_t user_id, int keep);
 
     // Saves (or, if already saved, renames) a sheet the user picked from
     // the Drive search/list result under their own account.
     Sheet add_sheet(int64_t user_id, const std::string& sheet_id,
                      const std::string& display_name);
     std::vector<Sheet> list_sheets(int64_t user_id);
+    size_t count_sheets(int64_t user_id);
     // Only deletes if the sheet belongs to `user_id` — callers must not
     // trust a bare sheet row id from a request without this ownership check.
     bool delete_sheet(int64_t user_id, int64_t sheet_row_id);
