@@ -19,8 +19,8 @@
 //   GET    /sheets/:id/history  recent generate runs for a sheet (JSON)
 //   POST   /sheets/:id/checklist  packing checklist PDF
 //   POST   /sheets/:id/all      every report in one .zip ("Download all")
-//   GET    /sheets/:id/design   the sheet's saved label design (JSON)
-//   PUT    /sheets/:id/design   save it: {"spec","order","hide"}
+//   GET    /sheets/:id/design   the sheet's saved label design and report options (JSON)
+//   PUT    /sheets/:id/design   save it: {"spec","order","hide","report_options"?:{...}}
 //   GET    /preview             one page of sample labels (?spec=&order=&hide=)
 //   POST   /sheets/:id/preview  the first page of the sheet's own labels (?spec=&order=&hide=)
 //   GET    /test-page           printer alignment page for a stock (?spec=)
@@ -31,6 +31,7 @@
 //   GET    /sheets/:id/values   the "Order Here" tab's raw cell rows (JSON, no pivot)
 //   GET    /label-specs.json    the label stock inventory
 //   GET    /static/js/:name.js  browser-side modules (static/js/)
+//   GET    /static/js/vendor/:name.js  third-party modules they use (static/js/vendor/)
 //
 // See sql/schema.sql for the users/sheets/runs/sessions tables.
 
@@ -72,6 +73,7 @@
 #include "zip_writer.h"
 #include "oauth.h"
 #include "ordering.h"
+#include "json_check.h"
 #include "records.h"
 #include "reports.h"
 #include "sheet_layout.h"
@@ -626,11 +628,7 @@ std::string build_bundle(PivotResult& pivot, const layout::LabelSpec& spec,
     std::string lots_csv = reports::lot_counts_csv(pivot.records, sort);
     auto lots_pdf = reports::lot_counts_pdf(pivot.records, sort);
 
-    std::string check = std::to_string(pivot.records.size()) + " labels\n";
-    if (pivot.issues.empty()) check += "No issues found.\n";
-    for (const auto& i : pivot.issues) {
-        check += "Row " + std::to_string(i.row) + " (" + i.kind + "): " + i.detail + "\n";
-    }
+    std::string check = records::check_text(pivot);
 
     auto records = ordering::order_records(std::move(pivot.records), order);
     auto as_str = [](const std::vector<uint8_t>& b) {
@@ -1293,15 +1291,26 @@ int main() {
 
     // Browser-side modules: GET /static/js/<name>.js (see load_static_js).
     // The same for everyone; a short cache so a new release is picked up soon.
+    // Third-party modules they import (pdf-lib) live one level down, in
+    // static/js/vendor/ (see the README there), served the same way: a
+    // fixed second route, not a path parameter, so the name rules are the
+    // same and nothing else can be reached.
     const std::map<std::string, std::string> static_js = load_static_js("static/js");
-    CROW_ROUTE(app, "/static/js/<string>")([&static_js](const std::string& name) {
-        auto it = is_static_js_name(name) ? static_js.find(name) : static_js.end();
-        if (it == static_js.end()) return crow::response(404, "not found");
+    const std::map<std::string, std::string> vendor_js = load_static_js("static/js/vendor");
+    auto serve_js = [](const std::map<std::string, std::string>& files, const std::string& name) {
+        auto it = is_static_js_name(name) ? files.find(name) : files.end();
+        if (it == files.end()) return crow::response(404, "not found");
         crow::response res(200, it->second);
         res.set_header("Content-Type", "text/javascript; charset=utf-8");
         // Kept by SecurityMiddleware (it only forces no-store on non-public responses).
         res.set_header("Cache-Control", "public, max-age=300");
         return res;
+    };
+    CROW_ROUTE(app, "/static/js/<string>")([&static_js, serve_js](const std::string& name) {
+        return serve_js(static_js, name);
+    });
+    CROW_ROUTE(app, "/static/js/vendor/<string>")([&vendor_js, serve_js](const std::string& name) {
+        return serve_js(vendor_js, name);
     });
 
     // Live preview of a saved sheet's own labels: the first page, in the
@@ -1445,14 +1454,25 @@ int main() {
         auto owned = db->find_owned_sheet(user->id, row_id);
         if (!owned) return crow::response(404, "sheet not found");
         std::string error;
-        auto design = resolve_design(db->get_design(owned->sheet_id), crow::request(), &error);
+        auto saved = db->get_design(owned->sheet_id);
+        auto design = resolve_design(saved, crow::request(), &error);
         crow::json::wvalue body;
         body["spec"] = design->spec->id;
         body["order"] = std::string(design->order == ordering::PartOrder::kHeaviest   ? "heaviest"
                                     : design->order == ordering::PartOrder::kLightest ? "lightest"
                                                                                       : "sheet");
         body["hide"] = design->options.hidden_csv();
-        crow::response res(200, body.dump());
+        // report_options goes back as stored: it was checked as a strict
+        // JSON object on the way in (checked again here all the same).
+        std::string options = "{}";
+        if (saved && saved->report_options && !saved->report_options->empty() &&
+            !json_check::report_options_error(*saved->report_options)) {
+            options = *saved->report_options;
+        }
+        std::string json = body.dump();
+        json.pop_back();  // the closing '}'
+        json += ",\"report_options\":" + options + "}";
+        crow::response res(200, json);
         res.set_header("Content-Type", "application/json");
         return res;
     });
@@ -1487,6 +1507,18 @@ int main() {
                 !has_string(json, "order") || !has_string(json, "hide")) {
                 return crow::response(400, R"(expected {"spec":..., "order":..., "hide":"..."})");
             }
+            // Optional: the report options, a JSON object of at most 4 KB,
+            // stored exactly as sent (the browser checks and clamps every
+            // value when it reads them back). Left out, what's stored stays.
+            auto raw_options = json_check::member(req.body, "report_options");
+            if (!raw_options) return crow::response(400, "the body must be one JSON object");
+            std::optional<std::string> report_options;
+            if (!raw_options->empty()) {
+                if (auto why = json_check::report_options_error(*raw_options)) {
+                    return crow::response(400, *why);
+                }
+                report_options = std::string(*raw_options);
+            }
             const layout::LabelSpec* spec = layout::find_label_spec(std::string(json["spec"].s()));
             std::string order = json["order"].s();
             std::string hide = json["hide"].s();
@@ -1495,7 +1527,9 @@ int main() {
             if (!ordering::parse_part_order(order)) return crow::response(400, "bad part order");
             auto opts = labels_pdf::LabelOptions::from_hidden(hide, &error);
             if (!opts) return crow::response(400, error);
-            db->put_design(owned->sheet_id, Design{spec->id, order, opts->hidden_csv()}, user->id);
+            db->put_design(owned->sheet_id,
+                           Design{spec->id, order, opts->hidden_csv(), std::move(report_options)},
+                           user->id);
             return crow::response(200, "saved");
         });
 

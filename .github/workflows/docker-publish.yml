@@ -200,9 +200,42 @@ jobs:
           grep -q 'export async function readXlsx' spreadsheet.js
           curl -fsS -o load.js http://localhost:8080/static/js/load.js
           grep -q 'export async function loadSheet' load.js
+          # The reports, their options and the zip writer the dashboard now
+          # uses, and the vendored pdf-lib they import (served unmodified).
+          for f in reports.js report_options.js printf.js zip.js vendor/pdf-lib.js; do
+            curl -fsS -D mod.headers -o mod.js "http://localhost:8080/static/js/$f"
+            echo "/static/js/$f -> $(wc -c < mod.js) bytes"
+            grep -qi '^content-type: text/javascript' mod.headers
+            grep -qi '^cache-control: public, max-age=300' mod.headers
+          done
+          curl -fsS -o reports.js http://localhost:8080/static/js/reports.js
+          grep -q 'export async function checklistPdf' reports.js
+          grep -qF "from './vendor/pdf-lib.js'" reports.js
+          curl -fsS -o zip.js http://localhost:8080/static/js/zip.js
+          grep -q 'export function zip' zip.js
+          curl -fsS -o pdf-lib.js http://localhost:8080/static/js/vendor/pdf-lib.js
+          sha256sum pdf-lib.js
+          test "$(sha256sum < pdf-lib.js | cut -d' ' -f1)" = 72c052d97b4d5d9fa6cdbdcb7ad709f03d4ddb1122390cb3afeba4d88651d969
+          # The vendor folder has the same flat-name rule: its README and
+          # license aren't served, and nothing outside it can be reached.
+          for bad in README.md pdf-lib.LICENSE.md Pdf-lib.js ..%2Freports.js ..%2F..%2F..%2Fsql%2Fschema.sql; do
+            code="$(curl -s -o /dev/null -w '%{http_code}' "http://localhost:8080/static/js/vendor/$bad")"
+            echo "/static/js/vendor/$bad -> $code"
+            test "$code" = 404 || test "$code" = 400
+          done
+          # Saving a sheet's design (and its report options) needs sign-in.
+          code="$(curl -s -o /dev/null -w '%{http_code}' -X PUT -H 'Content-Type: application/json' \
+            --data '{"spec":"avery5162","order":"heaviest","hide":"qr","report_options":{}}' \
+            http://localhost:8080/sheets/1/design)"
+          echo "PUT /sheets/1/design signed out -> $code"
+          test "$code" = 401
+          code="$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8080/sheets/1/design)"
+          test "$code" = 401
           # The dashboard's script is a module that loads sheets with them.
           grep -q '<script type="module" nonce="' <<< "$page"
           grep -qF "import { loadSheet } from '/static/js/load.js';" <<< "$page"
+          grep -qF "import * as reports from '/static/js/reports.js';" <<< "$page"
+          grep -q 'id="dl-zip"' <<< "$page"
           for bad in nope.js Pivot.js package.json ..%2Fpivot.js ..%2F..%2Fsql%2Fschema.sql; do
             code="$(curl -s -o /dev/null -w '%{http_code}' "http://localhost:8080/static/js/$bad")"
             echo "/static/js/$bad -> $code"

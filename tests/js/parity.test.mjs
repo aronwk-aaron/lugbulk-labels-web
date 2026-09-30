@@ -18,6 +18,7 @@ import * as layout from '../../static/js/layout.js';
 import * as ordering from '../../static/js/ordering.js';
 import * as pivot from '../../static/js/pivot.js';
 import * as records from '../../static/js/records.js';
+import * as reports from '../../static/js/reports.js';
 import * as spreadsheet from '../../static/js/spreadsheet.js';
 
 const dir = process.env.GOLDEN_DIR;
@@ -77,7 +78,14 @@ for (const file of cases) {
         canon(want.parts),
         `summarize_parts ${order}`,
       );
+      // CSV reports: byte for byte.
+      assert.equal(reports.partsCsv(ordering.summarizeParts(applied.records, order)), want.parts_csv, `parts_csv ${order}`);
+      assert.equal(reports.reportCsv('parts', applied.records, null, order), want.parts_csv, `reportCsv parts ${order}`);
     }
+    assert.equal(reports.lotCountsCsv(applied.records, 'last'), g.reports.lots_csv_last, 'lot_counts_csv last');
+    assert.equal(reports.lotCountsCsv(applied.records, 'first'), g.reports.lots_csv_first, 'lot_counts_csv first');
+    assert.equal(reports.reportCsv('lots', applied.records, null), g.reports.lots_csv_last, 'reportCsv lots');
+    assert.equal(reports.sheetCheckText(applied), g.reports.check_text, 'sheet check text');
   });
 }
 

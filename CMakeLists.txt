@@ -65,6 +65,7 @@ add_library(lugbulk_core STATIC
     src/samples.cpp
     src/spreadsheet.cpp
     src/zip_writer.cpp
+    src/json_check.cpp
     src/pdf_text.cpp
 )
 

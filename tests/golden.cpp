@@ -6,8 +6,9 @@
 //
 //   lugbulk_golden <out dir>
 //
-// Writes <out dir>/case-<name>.json per sheet, <out dir>/units.json for
-// the smaller functions, and <out dir>/spreadsheets.json: what the .xlsx and
+// Writes <out dir>/case-<name>.json per sheet (with the CSV reports and the
+// zip's sheet check text), <out dir>/units.json for the smaller functions,
+// and <out dir>/spreadsheets.json: what the .xlsx and
 // .csv reader makes of each fixture file and of generated inputs. Every fixture is invented data (no real orders).
 
 #include <sys/stat.h>
@@ -172,9 +173,54 @@ std::string case_json(const std::vector<Rows>& tabs) {
         first = false;
         out += jstr(name) + ":{\"records\":" +
                jarr(ordering::order_records(pivot.records, order), record_json) +
-               ",\"parts\":" + jarr(ordering::summarize_parts(pivot.records, order), part_json) + "}";
+               ",\"parts\":" + jarr(ordering::summarize_parts(pivot.records, order), part_json) +
+               ",\"parts_csv\":" + jstr(reports::parts_csv(ordering::summarize_parts(pivot.records, order))) +
+               "}";
     }
-    return out + "}}";
+    out += "}";
+
+    // The CSV reports and the zip's sheet check, as build_bundle makes them.
+    out += ",\"reports\":{\"lots_csv_last\":" +
+           jstr(reports::lot_counts_csv(pivot.records, reports::SortBy::kLastName)) +
+           ",\"lots_csv_first\":" +
+           jstr(reports::lot_counts_csv(pivot.records, reports::SortBy::kFirstName)) +
+           ",\"check_text\":" + jstr(records::check_text(pivot)) + "}";
+    return out + "}";
+}
+
+// Names and cells that CSV quoting and the formula guard have to handle
+// (all invented): leading = + - @, commas, quotes, non-ASCII, fractional
+// and thousands-separated quantities, and a duplicate row for an issue.
+std::vector<Rows> report_edge_cases() {
+    const std::vector<std::string> people = {
+        "=Evil Formula", "Anna \"Quote\" Smith", "Bo, Jr.", "Zo\xc3\xab \xc3\x89mile", "Cher",
+        "+Plus Person", "-Minus Person", "@At Sign", "Wendy Quill", "wendy quill"};
+    Rows rows{{"#", "Element ID", "Photo", "Description", "BL Color"}, {"", "", "", "", ""}};
+    for (const auto& p : people) {
+        rows[0].push_back(p);
+        rows[0].push_back("$$");
+        rows[1].push_back("qty");
+        rows[1].push_back("$$");
+    }
+    const std::vector<std::vector<std::string>> parts = {
+        {"3001", "BRICK 2X4", "Red"},
+        {"3020", "PLATE 2X4, \"GRILLE\"", "Blue"},
+        {"6225242", "=HYPERLINK(\"x\")", ""},
+        {"4211388", "BRICK 1X1X1 2/3", "Weird Pink"},
+        {"300121", "ROOF TILE 1X2X3/73\xc2\xb0", "Tan"},
+        {"4000001", "DUPLO BRICK 2X4", "White"},
+        {"3001", "BRICK 2X4 again", "Red"},
+    };
+    const std::vector<std::string> qtys = {"1", "2.5", "", "2,000", "0.333", "7", "", "12", "3", "1"};
+    for (size_t i = 0; i < parts.size(); ++i) {
+        Rows::value_type row{std::to_string(i + 1), parts[i][0], "", parts[i][1], parts[i][2]};
+        for (size_t p = 0; p < people.size(); ++p) {
+            row.push_back((i + p) % 3 == 0 ? "" : qtys[(i * 3 + p) % qtys.size()]);
+            row.push_back("");
+        }
+        rows.push_back(row);
+    }
+    return {rows};
 }
 
 // Over the row cap (3000) and the part limit (2000): 3100 rows of distinct parts.
@@ -653,6 +699,7 @@ int main(int argc, char** argv) {
         }
         write_file(dir + "/case-generated-too-many-parts.json", case_json(too_many_parts()));
         write_file(dir + "/case-generated-empty.json", case_json({Rows{}}));
+        write_file(dir + "/case-generated-report-edges.json", case_json(report_edge_cases()));
         write_file(dir + "/case-generated-no-tabs.json", case_json({}));
         write_file(dir + "/units.json", units_json());
         write_file(dir + "/spreadsheets.json", spreadsheets_json(fixtures));

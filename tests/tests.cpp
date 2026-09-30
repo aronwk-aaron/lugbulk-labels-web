@@ -3,6 +3,7 @@
 //
 //   cmake --build build && ctest --test-dir build --output-on-failure
 
+#include <sqlite3.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -22,6 +23,7 @@
 #include "colors.h"
 #include "bricklink.h"
 #include "image_backdrop.h"
+#include "json_check.h"
 #include "labels_pdf.h"
 #include "oauth.h"
 #include "rate_limits.h"
@@ -30,6 +32,7 @@
 #include "spreadsheet.h"
 #include "zip_writer.h"
 #include "ordering.h"
+#include "records.h"
 #include "reports.h"
 #include "sheet_layout.h"
 #include "sheet_pivot.h"
@@ -525,9 +528,117 @@ void test_design_storage() {
         db.put_design("sheet1", Design{"dymo30857", "sheet", "name"}, u.id);
         auto d = db.get_design("sheet1");
         CHECK(d && d->label_spec == "dymo30857" && d->part_order == "sheet" && d->hidden_parts == "name");
+        CHECK(d && d->report_options == std::string());  // never saved
+
+        // Report options are stored as sent, and kept when a save leaves them out.
+        const std::string opts = R"({"lots":{"sort":"first","title":"Zo\u00eb's LUG"},"zip":{"labels":false}})";
+        db.put_design("sheet1", Design{"dymo30857", "sheet", "name", opts}, u.id);
+        db.put_design("sheet1", Design{"avery5160", "heaviest", "qr"}, u.id);
+        d = db.get_design("sheet1");
+        CHECK(d && d->label_spec == "avery5160" && d->report_options == opts);
+        db.put_design("sheet1", Design{"avery5160", "heaviest", "qr", std::string("{}")}, u.id);
+        CHECK(db.get_design("sheet1")->report_options == std::string("{}"));
+        db.put_design("sheet2", Design{"avery5160", "heaviest", "qr"}, u.id);
+        CHECK(db.get_design("sheet2")->report_options == std::string());
     }
     std::remove((dir + "/t.sqlite3").c_str());
     rmdir(dir.c_str());
+}
+
+// A database from before report_options gets the column on open, and its
+// saved designs keep working.
+void test_design_migration() {
+    char dir_template[] = "/tmp/lugbulk_db_XXXXXX";
+    std::string dir = mkdtemp(dir_template);
+    const std::string path = dir + "/old.sqlite3";
+    {
+        sqlite3* raw = nullptr;
+        CHECK(sqlite3_open(path.c_str(), &raw) == SQLITE_OK);
+        const char* old_schema =
+            "CREATE TABLE sheet_designs (google_sheet_id TEXT PRIMARY KEY, label_spec TEXT NOT NULL,"
+            " part_order TEXT NOT NULL, hidden_parts TEXT NOT NULL, updated_by INTEGER,"
+            " updated_at TEXT NOT NULL DEFAULT (datetime('now')));"
+            "INSERT INTO sheet_designs (google_sheet_id, label_spec, part_order, hidden_parts)"
+            " VALUES ('old', 'avery5162', 'lightest', 'qr');";
+        CHECK(sqlite3_exec(raw, old_schema, nullptr, nullptr, nullptr) == SQLITE_OK);
+        sqlite3_close(raw);
+    }
+    {
+        Db db(path, LUGBULK_SCHEMA_PATH);
+        auto d = db.get_design("old");
+        CHECK(d && d->label_spec == "avery5162" && d->report_options == std::string());
+        std::vector<uint8_t> token{1};
+        User u = db.upsert_user("sub-2", "bo@example.com", &token);
+        db.put_design("old", Design{"avery5162", "lightest", "qr", std::string(R"({"parts":{}})")}, u.id);
+        CHECK(db.get_design("old")->report_options == std::string(R"({"parts":{}})"));
+    }
+    {
+        Db again(path, LUGBULK_SCHEMA_PATH);  // migrating twice is a no-op
+        CHECK(again.get_design("old")->report_options == std::string(R"({"parts":{}})"));
+    }
+    std::remove(path.c_str());
+    rmdir(dir.c_str());
+}
+
+void test_json_check() {
+    using json_check::member;
+    using json_check::report_options_error;
+    using json_check::valid;
+    for (const char* ok : {"{}", " {\"a\" : [1, -0.5e+3, true, false, null, \"x\\n\\u00e9\"]} ", "[]", "0",
+                           "\"Zo\xc3\xab\"", "{\"a\":{\"b\":{}}}", "-12.25E-2", "\"\xf0\x9f\xa7\xb1\""}) {
+        if (!valid(ok)) std::cerr << "  should be valid: " << ok << "\n";
+        CHECK(valid(ok));
+    }
+    for (const char* bad : {"", "{", "{\"a\":1,}", "[1,]", "{'a':1}", "{\"a\":01}", "{\"a\":1.}", "{\"a\":.5}",
+                            "{\"a\":+1}", "{\"a\":NaN}", "{\"a\":Infinity}", "{\"a\":tru}", "{} {}",
+                            "{\"a\":\"\t\"}", "{\"a\":\"\\x\"}", "{\"a\":\"\\u12\"}", "\"\xc3\"",
+                            "\"\xc0\x80\"", "\"\xed\xa0\x80\"", "\"\xf4\x90\x80\x80\"", "{\"a\" 1}",
+                            "// x\n{}", "{\"a\":1}x", "\"abc"}) {
+        if (valid(bad)) std::cerr << "  should be invalid: " << bad << "\n";
+        CHECK(!valid(bad));
+    }
+    std::string deep(40, '[');
+    deep += std::string(40, ']');
+    CHECK(!valid(deep));
+    std::string ok_deep(30, '[');
+    ok_deep += std::string(30, ']');
+    CHECK(valid(ok_deep));
+
+    // member(): the raw text of a top-level member, "" when absent.
+    const std::string body =
+        R"({"spec":"avery5160","report_options": {"lots": {"sort":"first"}} ,"x":{"report_options":1}})";
+    CHECK(member(body, "report_options") == std::optional<std::string_view>(R"({"lots": {"sort":"first"}})"));
+    CHECK(member(body, "spec") == std::optional<std::string_view>("\"avery5160\""));
+    CHECK(member(R"({"spec":"a"})", "report_options") == std::optional<std::string_view>(""));
+    CHECK(!member(R"({"report_options":{},"report_options":{}})", "report_options"));
+    CHECK(!member("[1]", "report_options"));
+    CHECK(!member("{\"a\":1", "report_options"));
+
+    // report_options_error(): a JSON object of at most 4 KB.
+    CHECK(!report_options_error("{}"));
+    CHECK(!report_options_error(R"({"checklist":{"title":"Brick Club 2031","photo":true}})"));
+    CHECK(report_options_error("[]").has_value());
+    CHECK(report_options_error("\"x\"").has_value());
+    CHECK(report_options_error("null").has_value());
+    CHECK(report_options_error("{\"a\":}").has_value());
+    std::string big = "{\"t\":\"" + std::string(4090, 'x') + "\"}";
+    CHECK(big.size() > json_check::kMaxReportOptionsBytes);
+    CHECK(report_options_error(big).has_value());
+    std::string fits = "{\"t\":\"" + std::string(4096 - 8, 'x') + "\"}";
+    CHECK(fits.size() == json_check::kMaxReportOptionsBytes);
+    CHECK(!report_options_error(fits));
+}
+
+void test_check_text() {
+    PivotResult pivot;
+    CHECK_EQ(records::check_text(pivot), std::string("0 labels\nNo issues found.\n"));
+    pivot.records.resize(3);
+    SheetIssue issue;
+    issue.row = 7;
+    issue.kind = "bad_qty";
+    issue.detail = "Made-up problem";
+    pivot.issues.push_back(issue);
+    CHECK_EQ(records::check_text(pivot), std::string("3 labels\nRow 7 (bad_qty): Made-up problem\n"));
 }
 
 std::string read_file(const std::string& path) {
@@ -639,6 +750,9 @@ int main() {
         {"rate_limits", test_rate_limits},
         {"label_options_and_extras", test_label_options_and_extras},
         {"design_storage", test_design_storage},
+        {"design_migration", test_design_migration},
+        {"json_check", test_json_check},
+        {"check_text", test_check_text},
         {"labels_pdf_every_spec", test_labels_pdf_every_spec},
     };
     for (const auto& [name, fn] : tests) {

@@ -164,6 +164,23 @@
   #stock-list [role=option][aria-selected=true] { font-weight: 600; }
   #stock-list [role=option].active { background: var(--button-hover); }
   #stock-list .none { padding: 0.5rem 0.75rem; color: var(--muted); font-style: italic; }
+
+  /* Tabs: one per document; each has its settings panel and preview. */
+  .tabs { display: flex; flex-wrap: wrap; gap: 0.25rem; border-bottom: 1px solid var(--border);
+          margin: 0 0 1rem; }
+  .tabs [role=tab] { background: none; border: 0; border-bottom: 3px solid transparent;
+                     border-radius: 6px 6px 0 0; padding: 0.45rem 0.8rem; color: var(--muted);
+                     margin-bottom: -1px; }
+  .tabs [role=tab]:hover { background: var(--button-hover); color: var(--fg); }
+  .tabs [role=tab][aria-selected=true] { color: var(--fg); font-weight: 600;
+                                         border-bottom-color: var(--accent); }
+  @media (max-width: 640px) { .tabs [role=tab] { padding: 0.4rem 0.55rem; font-size: 0.9rem; } }
+  .field input[type=text], .field input[type=number] { width: 100%; }
+  input[type=number] { background: var(--button-bg); border: 1px solid var(--border-strong);
+                       border-radius: 6px; padding: 0.35rem 0.5rem; min-width: 0; }
+  .field-row { display: grid; grid-template-columns: 1fr 1fr; gap: 0 0.75rem; }
+  #zip-files { grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); }
+  .panel .switches { margin-bottom: 0.6rem; }
 </style>
 </head>
 <body>
@@ -227,9 +244,21 @@
     <ul class="issues" id="ws-issues"></ul>
   </details>
 
+  <div class="tabs" role="tablist" aria-label="Document to set up and preview">
+    <button type="button" role="tab" id="tab-labels" data-tab="labels" aria-controls="panel-labels">Labels</button>
+    <button type="button" role="tab" id="tab-checklist" data-tab="checklist" aria-controls="panel-checklist">Packing checklist</button>
+    <button type="button" role="tab" id="tab-parts" data-tab="parts" aria-controls="panel-parts">Parts list</button>
+    <button type="button" role="tab" id="tab-lots" data-tab="lots" aria-controls="panel-lots">Lot counts</button>
+  </div>
+
   <div class="ws-grid">
     <div>
-      <div class="panel">
+      <!-- Report settings: one panel per report, filled in by the script. -->
+      <div class="panel" id="panel-checklist" role="tabpanel" aria-labelledby="tab-checklist" hidden></div>
+      <div class="panel" id="panel-parts" role="tabpanel" aria-labelledby="tab-parts" hidden></div>
+      <div class="panel" id="panel-lots" role="tabpanel" aria-labelledby="tab-lots" hidden></div>
+
+      <div class="panel" id="panel-labels" role="tabpanel" aria-labelledby="tab-labels">
         <h3><span class="step">1</span>Label design</h3>
         <p class="note" id="design-note"></p>
         <div class="field combo">
@@ -262,10 +291,7 @@
         <h3><span class="step">2</span>Download</h3>
         <div class="stack">
           <button type="button" class="primary big" id="dl-labels">Download labels (PDF)</button>
-          <button type="button" class="big" id="dl-all">Download everything (.zip)</button>
         </div>
-        <p class="note" style="margin:0.4rem 0 0">Everything = labels, packing checklist, parts list,
-          lot counts (PDF and CSV) and the sheet check.</p>
         <h4>Or one report</h4>
         <div class="actions">
           <button type="button" id="dl-checklist">Packing checklist</button>
@@ -278,13 +304,21 @@
             </select>
           </label>
         </div>
+        <p class="note" style="margin:0.4rem 0 0">Reports use the settings on their tabs and are made
+          right here in your browser.</p>
+        <h4>Several at once</h4>
+        <div class="switches" id="zip-files" role="group" aria-label="Files in the zip"></div>
+        <p class="status muted" id="zip-status"></p>
+        <div class="stack" style="margin-top:0.6rem">
+          <button type="button" class="big" id="dl-zip">Download selected (.zip)</button>
+        </div>
         <p class="status muted" id="dl-status"></p>
       </div>
     </div>
 
     <div class="ws-preview">
       <div class="preview-head">
-        <h3>Preview <span class="muted" style="font-weight:normal">— first page of your labels</span></h3>
+        <h3>Preview <span class="muted" style="font-weight:normal" id="preview-what">— first page of your labels</span></h3>
         <span class="muted" id="preview-status"></span>
       </div>
       <iframe id="preview" title="Label preview"></iframe>
@@ -303,6 +337,9 @@
 // The page's script is a module so it can use the browser-side code in
 // /static/js/ (the CSP allows same-origin scripts beside this nonce).
 import { loadSheet } from '/static/js/load.js';
+import * as reportOptions from '/static/js/report_options.js';
+import * as reports from '/static/js/reports.js';
+import { zip } from '/static/js/zip.js';
 
 function el(tag, props, children) {
   const e = document.createElement(tag);
@@ -532,6 +569,141 @@ const setText = (node, text, error) => {
   node.classList.toggle('muted', !error);
 };
 
+// --- Report settings ---
+// One panel per report, built from this list. The values live in
+// `ws.options`; report_options.js checks and clamps whatever is read back
+// (from this page, localStorage or the server), so nothing here trusts them.
+const PAGE_FIELDS = (titleHint) => [
+  ['text', 'title', 'Title', titleHint, reportOptions.MAX_TITLE],
+  ['text', 'subtitle', 'Subtitle line', 'e.g. your LUG and the year', reportOptions.MAX_SUBTITLE],
+  ['row', [
+    ['select', 'paper', 'Paper', [['letter', 'US Letter'], ['a4', 'A4']]],
+    ['select', 'orientation', 'Orientation', [['portrait', 'Portrait'], ['landscape', 'Landscape']]],
+  ]],
+];
+const SORT_PEOPLE = ['select', 'sort', 'Sort people by', [['last', 'Last name'], ['first', 'First name']]];
+const REPORTS = {
+  checklist: {
+    name: 'Packing checklist',
+    what: '— packing checklist, every page',
+    fields: [
+      ...PAGE_FIELDS("None (each page shows the person's name)"),
+      SORT_PEOPLE,
+      ['select', 'order', 'Part order', [['labels', 'Same as the labels'], ['heaviest', 'Heaviest parts first'],
+                                        ['lightest', 'Lightest parts first'], ['sheet', 'Sheet order']]],
+      ['select', 'layout', 'Pages', [['page', 'A new page for each person'], ['continuous', 'One person after another']]],
+      ['checks', 'Show', [['checkbox', 'Tick box'], ['color', 'Colors'], ['weight', 'Weight each'],
+                          ['photo', 'Part photo'], ['packed_by', '“Packed by / date” line']]],
+    ],
+  },
+  parts: {
+    name: 'Parts list',
+    what: '— parts list, every page',
+    fields: [
+      ...PAGE_FIELDS('Parts list'),
+      ['select', 'order', 'Part order', [['labels', 'Same as the labels'], ['heaviest', 'Heaviest parts first'],
+                                        ['lightest', 'Lightest parts first'], ['sheet', 'Sheet order'],
+                                        ['element', 'By element ID']]],
+      ['checks', 'Columns', [['photo', 'Photo'], ['lego_color', 'LEGO color'], ['bl_color', 'BrickLink color'],
+                             ['pieces', 'Total pieces'], ['people', 'People'], ['weight', 'Weight each'],
+                             ['total_weight', 'Total weight']]],
+      ['checks', 'Layout', [['group_by_color', 'Group by color']]],
+    ],
+  },
+  lots: {
+    name: 'Lot counts',
+    what: '— lot counts, every page',
+    fields: [
+      ...PAGE_FIELDS('Lot counts by person'),
+      SORT_PEOPLE,
+      ['checks', 'Columns', [['lots', 'Lots'], ['pieces', 'Total pieces'], ['total_weight', 'Total weight']]],
+      ['checks', 'Rows', [['totals', 'Totals row']]],
+      ['number', 'min_lots', 'Leave out people with fewer lots than', 0, reportOptions.MAX_MIN_LOTS],
+    ],
+  },
+};
+const optionInput = (kind, key) => document.getElementById('opt-' + kind + '-' + key);
+
+function buildField(kind, f) {
+  const [type] = f;
+  const id = (key) => 'opt-' + kind + '-' + key;
+  if (type === 'row') return el('div', { class: 'field-row' }, f[1].map((g) => buildField(kind, g)));
+  if (type === 'checks') {
+    const box = el('div', { class: 'switches' });
+    for (const [key, text] of f[2]) {
+      box.appendChild(el('label', {}, [el('input', { type: 'checkbox', id: id(key) }), document.createTextNode(text)]));
+    }
+    return el('div', {}, [el('h4', { text: f[1] }), box]);
+  }
+  const [, key, label] = f;
+  let input;
+  if (type === 'select') {
+    input = el('select', { id: id(key) }, f[3].map(([value, text]) => el('option', { value, text })));
+  } else if (type === 'number') {
+    input = el('input', { type: 'number', id: id(key), min: String(f[3]), max: String(f[4]), step: '1', inputmode: 'numeric' });
+  } else {
+    input = el('input', { type: 'text', id: id(key), placeholder: f[3], maxlength: String(f[4]), autocomplete: 'off' });
+  }
+  return el('label', { class: 'field' }, [document.createTextNode(label), input]);
+}
+
+for (const [kind, r] of Object.entries(REPORTS)) {
+  const panel = $('panel-' + kind);
+  panel.appendChild(el('h3', {}, [el('span', { class: 'step', text: '1' }), document.createTextNode(r.name)]));
+  panel.appendChild(el('p', { class: 'note', id: 'opt-note-' + kind }));
+  for (const f of r.fields) panel.appendChild(buildField(kind, f));
+  panel.appendChild(el('p', { class: 'status muted', id: 'opt-status-' + kind }));
+  panel.addEventListener('input', (e) => optionsChanged($('opt-status-' + kind), e.target.type === 'text' || e.target.type === 'number'));
+  panel.addEventListener('change', (e) => { if (e.target.tagName === 'SELECT' || e.target.type === 'checkbox') optionsChanged($('opt-status-' + kind)); });
+}
+for (const [id, text] of reportOptions.ZIP_FILES) {
+  $('zip-files').appendChild(el('label', {}, [el('input', { type: 'checkbox', id: 'zip-' + id }), document.createTextNode(text)]));
+}
+$('zip-files').addEventListener('change', () => optionsChanged($('zip-status')));
+
+// Every settings input, read into a (normalized) options object.
+function currentOptions() {
+  const raw = { zip: {} };
+  for (const [kind, defaults] of Object.entries(reportOptions.DEFAULTS)) {
+    if (kind === 'zip') continue;
+    raw[kind] = {};
+    for (const key of Object.keys(defaults)) {
+      const input = optionInput(kind, key);
+      if (!input) continue;
+      raw[kind][key] = input.type === 'checkbox' ? input.checked : input.value;
+    }
+  }
+  for (const [id] of reportOptions.ZIP_FILES) raw.zip[id] = $('zip-' + id).checked;
+  return reportOptions.normalizeOptions(raw);
+}
+function showOptions(o) {
+  for (const [kind, section] of Object.entries(o)) {
+    if (kind === 'zip') continue;
+    for (const [key, value] of Object.entries(section)) {
+      const input = optionInput(kind, key);
+      if (!input) continue;
+      if (input.type === 'checkbox') input.checked = value;
+      else input.value = String(value);
+    }
+  }
+  for (const [id] of reportOptions.ZIP_FILES) $('zip-' + id).checked = o.zip[id];
+  updateZipButton();
+}
+function updateZipButton() {
+  const none = !reportOptions.ZIP_FILES.some(([id]) => $('zip-' + id).checked);
+  $('dl-zip').disabled = none;
+  $('dl-zip').title = none ? 'Tick at least one file' : '';
+}
+
+const UPLOAD_OPTIONS_KEY = 'lugbulk.uploadReportOptions';
+function uploadOptions() {
+  try {
+    return reportOptions.parseOptions(localStorage.getItem(UPLOAD_OPTIONS_KEY) || 'null');
+  } catch (e) {
+    return reportOptions.normalizeOptions(null);
+  }
+}
+
 // Where the open sheet's routes live, and how to send a request to one:
 // an upload sends the file itself as the body.
 const wsBase = () => ws.kind === 'sheet' ? '/sheets/' + encodeURIComponent(ws.sheet.row_id) : '/upload';
@@ -544,16 +716,108 @@ function uploadRequest(file) {
   return { method: 'POST', body: file, headers: { 'X-File-Name': name, 'Content-Type': 'application/octet-stream' } };
 }
 
+// --- Tabs ---
+// Labels, or one of the reports: picks the settings panel on the left and
+// what the preview shows. Remembered per browser.
+let tab = 'labels';
+const TABS = ['labels', ...Object.keys(REPORTS)];
+function showTab(name, focus) {
+  if (!TABS.includes(name)) name = 'labels';
+  tab = name;
+  for (const t of TABS) {
+    const button = $('tab-' + t);
+    button.setAttribute('aria-selected', String(t === name));
+    button.tabIndex = t === name ? 0 : -1;
+    $('panel-' + t).hidden = t !== name;
+  }
+  if (focus) $('tab-' + name).focus();
+  $('preview-what').textContent = name === 'labels' ? '— first page of your labels' : REPORTS[name].what;
+  try { localStorage.setItem('lugbulk.tab', name); } catch (e) {}
+  if (ws) renderPreview();
+}
+for (const t of TABS) {
+  $('tab-' + t).addEventListener('click', () => showTab(t));
+  $('tab-' + t).addEventListener('keydown', (e) => {
+    const step = { ArrowRight: 1, ArrowLeft: -1 }[e.key];
+    if (!step) return;
+    e.preventDefault();
+    showTab(TABS[(TABS.indexOf(tab) + step + TABS.length) % TABS.length], true);
+  });
+}
+try { showTab(localStorage.getItem('lugbulk.tab') || 'labels'); } catch (e) { showTab('labels'); }
+
+// --- Part photos (for reports with a photo column) ---
+// Fetched from this server's /img/<id>.jpg (LEGO's own site can't be read
+// from a page), a few at a time, and kept for the visit. null = no photo.
+const photoCache = new Map();
+const photoPending = new Map();
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+async function fetchPhoto(id) {
+  for (let attempt = 0; attempt < 4; attempt++) {
+    let res;
+    try {
+      res = await fetch('/img/' + encodeURIComponent(id) + '.jpg', { credentials: 'same-origin' });
+    } catch (e) {
+      return undefined;  // offline: try again next time
+    }
+    if (res.ok) return new Uint8Array(await res.arrayBuffer());
+    if (res.status === 404 || res.status === 400) return null;
+    if (res.status !== 429 && res.status !== 503) return undefined;
+    await sleep(Math.min(10, Number(res.headers.get('Retry-After')) || 2) * 1000);
+  }
+  return undefined;
+}
+function photo(id) {
+  if (photoCache.has(id)) return Promise.resolve(photoCache.get(id));
+  if (!photoPending.has(id)) {
+    photoPending.set(id, fetchPhoto(id).then((bytes) => {
+      photoPending.delete(id);
+      if (bytes !== undefined) photoCache.set(id, bytes);
+      return bytes ?? null;
+    }));
+  }
+  return photoPending.get(id);
+}
+// Map id -> JPEG bytes for a report, or null when it shows no photos.
+async function photosFor(kind, loaded, options, onProgress) {
+  const ids = reports.imageIdsFor(kind, loaded.records, options);
+  if (!ids.length) return null;
+  const images = new Map();
+  let next = 0;
+  let done = 0;
+  const worker = async () => {
+    while (next < ids.length) {
+      const id = ids[next++];
+      images.set(id, await photo(id));
+      done++;
+      if (onProgress && done < ids.length) onProgress(done, ids.length);
+    }
+  };
+  await Promise.all([worker(), worker(), worker(), worker()]);
+  return images;
+}
+
 // --- Preview ---
-// Paused while a download is being made (the server runs one job per
-// person at a time), then brought up to date.
+// Labels come from the server (paused while a download is being made: the
+// server runs one job per person at a time, then brought up to date).
+// Reports are made here from the sheet already read (`ws.loaded`).
 let previewUrl = null;
+let previewSeq = 0;
 let busy = 0;
 let previewStale = false;
+function showPdf(blob) {
+  const url = URL.createObjectURL(blob);
+  $('preview').src = url + '#view=FitH';
+  $('preview-open').href = url;
+  if (previewUrl) URL.revokeObjectURL(previewUrl);
+  previewUrl = url;
+}
 async function renderPreview() {
   if (!ws) return;
+  if (tab !== 'labels') return renderReportPreview(tab);
   if (busy) { previewStale = true; return; }
   previewStale = false;
+  const seq = ++previewSeq;
   const status = $('preview-status');
   setText(status, 'Updating…');
   const opened = ws;
@@ -561,32 +825,61 @@ async function renderPreview() {
     const res = await wsRequest(wsBase() + '/preview?' + new URLSearchParams(currentDesign()));
     if (!res.ok) throw new Error(await res.text());
     const blob = await res.blob();
-    if (ws !== opened) return;
-    const url = URL.createObjectURL(blob);
-    $('preview').src = url + '#view=FitH';
-    $('preview-open').href = url;
-    if (previewUrl) URL.revokeObjectURL(previewUrl);
-    previewUrl = url;
+    if (ws !== opened || seq !== previewSeq) return;
+    showPdf(blob);
     setText(status, '');
   } catch (e) {
-    if (ws === opened) setText(status, e.message, true);
+    if (ws === opened && seq === previewSeq) setText(status, e.message, true);
+  }
+}
+async function renderReportPreview(kind) {
+  const seq = ++previewSeq;
+  const opened = ws;
+  const status = $('preview-status');
+  const current = () => ws === opened && seq === previewSeq;
+  if (!ws.loaded) {
+    setText(status, 'The sheet hasn’t been read yet — try “Check again”.', true);
+    return;
+  }
+  setText(status, 'Updating…');
+  try {
+    const { loaded, options } = ws;
+    const images = await photosFor(kind, loaded, options, (done, total) => {
+      if (current()) setText(status, 'Fetching part photos… ' + done + ' of ' + total);
+    });
+    if (!current()) return;
+    const bytes = await reports.reportPdf(kind, loaded.records, options, { labelOrder: opt('part-order'), images });
+    if (!current()) return;
+    showPdf(new Blob([bytes], { type: 'application/pdf' }));
+    setText(status, '');
+  } catch (e) {
+    if (current()) setText(status, (e && e.message) || 'Couldn’t make the preview.', true);
   }
 }
 const refreshPreview = debounce(renderPreview, 400);
 
-// --- Design ---
+// --- Design and report settings ---
+// Saved together: in this browser for uploads, with the sheet on the
+// server for a saved Google Sheet (shared by everyone who has it saved).
+// `saveStatus` is where the last change was made, to say it was saved.
+let saveStatus = null;
 const saveDesign = debounce(async () => {
-  const status = $('design-status');
+  const status = saveStatus || $('design-status');
   if (!ws) return;
   if (ws.kind === 'upload') {
-    try { localStorage.setItem(UPLOAD_DESIGN_KEY, JSON.stringify(currentDesign())); } catch (e) {}
-    setText(status, 'Saved in this browser.');
+    try {
+      localStorage.setItem(UPLOAD_DESIGN_KEY, JSON.stringify(currentDesign()));
+      localStorage.setItem(UPLOAD_OPTIONS_KEY, reportOptions.serializeOptions(ws.options));
+      setText(status, 'Saved in this browser.');
+    } catch (e) {
+      setText(status, 'Not saved: this browser won’t store it.', true);
+    }
     return;
   }
   try {
     const res = await api(wsBase() + '/design', {
       method: 'PUT', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(currentDesign())
+      body: JSON.stringify(Object.assign(currentDesign(), { report_options: reportOptions.normalizeOptions(ws.options) }))
     });
     if (!res.ok) throw new Error(await res.text());
     setText(status, 'Saved with the sheet.');
@@ -595,8 +888,21 @@ const saveDesign = debounce(async () => {
   }
 }, 700);
 function designChanged() {
-  setText($('design-status'), 'Saving…');
+  saveStatus = $('design-status');
+  setText(saveStatus, 'Saving…');
   refreshPreview();
+  saveDesign();
+}
+// A report setting changed. Typing (titles, numbers) waits a little longer
+// before the preview is remade.
+const refreshPreviewSlowly = debounce(renderPreview, 800);
+function optionsChanged(status, typing) {
+  if (!ws) return;
+  ws.options = currentOptions();
+  updateZipButton();
+  saveStatus = status;
+  setText(status, 'Saving…');
+  (typing ? refreshPreviewSlowly : refreshPreview)();
   saveDesign();
 }
 for (const id of ['label-spec', 'part-order']) $(id).addEventListener('change', designChanged);
@@ -666,19 +972,33 @@ async function openWorkspace(source) {
   $('design-note').textContent = ws.kind === 'sheet'
     ? 'Saved with the sheet: everyone who has it saved prints this design.'
     : 'Remembered in this browser for your uploads.';
+  for (const kind of Object.keys(REPORTS)) {
+    $('opt-note-' + kind).textContent = ws.kind === 'sheet'
+      ? 'Saved with the sheet, like the label design.'
+      : 'Remembered in this browser for your uploads.';
+    setText($('opt-status-' + kind), '');
+  }
   setText($('design-status'), '');
   setText($('dl-status'), '');
+  setText($('zip-status'), '');
   setText($('preview-status'), '');
   $('preview').removeAttribute('src');
   for (const li of document.querySelectorAll('#saved-list .sheet')) {
     li.classList.toggle('current', ws.kind === 'sheet' && li.dataset.rowId === String(ws.sheet.row_id));
   }
   let design = uploadDesign();
+  let options = ws.kind === 'sheet' ? reportOptions.normalizeOptions(null) : uploadOptions();
   if (ws.kind === 'sheet') {
     const res = await api(wsBase() + '/design');
-    if (res.ok) design = await res.json();
+    if (res.ok) {
+      design = await res.json();
+      options = reportOptions.normalizeOptions(design.report_options);
+    }
   }
+  if (ws !== source) return;  // another sheet was opened meanwhile
+  source.options = options;
   showDesign(design);
+  showOptions(options);
   const panel = $('workspace');
   panel.hidden = false;
   panel.scrollIntoView({ behavior: 'smooth', block: 'start' });
@@ -692,52 +1012,119 @@ $('ws-close').addEventListener('click', () => {
 });
 
 // --- Downloads ---
-// fetch() can't drive a download directly, so the response is read as a
-// blob and handed to a throwaway <a download>.
-async function saveResponse(res, fallbackName) {
-  if (!res.ok) {
-    // Server errors are short plain-text messages meant for the user.
-    const text = await res.text().catch(() => '');
-    throw new Error(text || ('Request failed (' + res.status + ') — try again.'));
-  }
-  const blob = await res.blob();
-  const match = (res.headers.get('Content-Disposition') || '').match(/filename="([^"]+)"/);
+// The labels PDF comes from the server; the reports, the sheet check and
+// the zip are made here in the browser. fetch() can't drive a download
+// directly, so each file is handed to a throwaway <a download>.
+function saveBlob(blob, name) {
   const url = URL.createObjectURL(blob);
-  const a = el('a', { href: url, download: match ? match[1] : fallbackName });
+  const a = el('a', { href: url, download: name });
   document.body.appendChild(a);
   a.click();
   a.remove();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
-const dlButtons = ['dl-labels', 'dl-all', 'dl-checklist', 'dl-parts', 'dl-lots'].map($);
-function downloadButton(id, busyText, route, suffix, withFormat) {
-  $(id).addEventListener('click', async () => {
-    if (!ws) return;
-    const opened = ws;
-    const status = $('dl-status');
-    const q = new URLSearchParams(currentDesign());
-    if (withFormat) q.set('format', opt('report-format'));
-    const ext = withFormat ? '.' + opt('report-format') : '';
-    dlButtons.forEach(b => b.disabled = true);
-    busy++;
-    setText(status, busyText);
-    try {
-      await saveResponse(await wsRequest(wsBase() + '/' + route + '?' + q), opened.name.replace(/\.[^.]*$/, '') + suffix + ext);
-      setText(status, '');
-    } catch (e) {
-      setText(status, e.message, true);
-    }
-    busy--;
-    dlButtons.forEach(b => b.disabled = false);
-    if (previewStale) renderPreview();
-    if (opened.kind === 'sheet') refreshHistory(opened.sheet);
-  });
+// A failed server response as an Error (its plain-text messages are meant for the user).
+async function responseError(res) {
+  const text = await res.text().catch(() => '');
+  return new Error(text || ('Request failed (' + res.status + ') — try again.'));
 }
-downloadButton('dl-labels', 'Making your labels… (can take a minute)', 'labels', ' labels.pdf');
-downloadButton('dl-all', 'Making the labels and every report… (can take a minute)', 'all', ' labels and reports.zip');
-downloadButton('dl-checklist', 'Making the packing checklist…', 'checklist', ' packing checklist.pdf');
-downloadButton('dl-parts', 'Making the parts list…', 'parts', ' parts', true);
-downloadButton('dl-lots', 'Making the lot counts…', 'lots', ' lot counts', true);
+const dlButtons = ['dl-labels', 'dl-zip', 'dl-checklist', 'dl-parts', 'dl-lots'].map($);
+const stemOf = (w) => reports.fileStem(w.name, w.kind === 'upload');
+const REPORT_FILES = { checklist: ' packing checklist', parts: ' parts', lots: ' lot counts' };
+
+// Runs one download: buttons off, the labels preview paused, errors shown.
+async function download(busyText, work) {
+  if (!ws) return;
+  const opened = ws;
+  const status = $('dl-status');
+  dlButtons.forEach(b => b.disabled = true);
+  busy++;
+  setText(status, busyText);
+  try {
+    await work(opened, status);
+    if (ws === opened) setText(status, '');
+  } catch (e) {
+    if (ws === opened) setText(status, (e && e.message) || 'Something went wrong — try again.', true);
+  }
+  busy--;
+  dlButtons.forEach(b => b.disabled = false);
+  updateZipButton();
+  if (previewStale || tab !== 'labels') refreshPreview();
+  if (opened.kind === 'sheet') refreshHistory(opened.sheet);
+}
+
+// The sheet as it is now: downloads read it again first, as the server's
+// always did (a saved Google Sheet may have changed since it was opened).
+async function freshSheet(opened, status) {
+  setText(status, 'Reading the sheet…');
+  await runCheck();
+  if (ws !== opened) throw new Error('Closed.');
+  if (!ws.loaded) throw new Error('The sheet couldn’t be read — see the message above.');
+  return ws.loaded;
+}
+
+// The labels PDF, from the server, in the design on screen.
+async function labelsPdf() {
+  const res = await wsRequest(wsBase() + '/labels?' + new URLSearchParams(currentDesign()));
+  if (!res.ok) throw await responseError(res);
+  return new Uint8Array(await res.arrayBuffer());
+}
+
+// One report's file: {name, bytes|text, type}.
+async function reportFile(kind, format, loaded, opened, status) {
+  const options = opened.options;
+  const labelOrder = opt('part-order');
+  const name = stemOf(opened) + REPORT_FILES[kind] + '.' + format;
+  if (format === 'csv') {
+    return { name, data: reports.reportCsv(kind, loaded.records, options, labelOrder), type: 'text/csv;charset=utf-8' };
+  }
+  const images = await photosFor(kind, loaded, options, (done, total) => {
+    if (ws === opened) setText(status, 'Fetching part photos… ' + done + ' of ' + total);
+  });
+  const data = await reports.reportPdf(kind, loaded.records, options, { labelOrder, images });
+  return { name, data, type: 'application/pdf' };
+}
+
+$('dl-labels').addEventListener('click', () => download('Making your labels… (can take a minute)', async (opened) => {
+  saveBlob(new Blob([await labelsPdf()], { type: 'application/pdf' }), stemOf(opened) + ' labels.pdf');
+}));
+
+for (const kind of Object.keys(REPORT_FILES)) {
+  $('dl-' + kind).addEventListener('click', () => download('Making the ' + REPORTS[kind].name.toLowerCase() + '…', async (opened, status) => {
+    const loaded = await freshSheet(opened, status);
+    // The packing checklist is a PDF only.
+    const format = kind === 'checklist' ? 'pdf' : opt('report-format');
+    setText(status, 'Making the ' + REPORTS[kind].name.toLowerCase() + '…');
+    const file = await reportFile(kind, format, loaded, opened, status);
+    saveBlob(new Blob([file.data], { type: file.type }), file.name);
+  }));
+}
+
+// "Download selected": the ticked files in one .zip, made here. Only the
+// labels PDF is fetched from the server.
+$('dl-zip').addEventListener('click', () => download('Reading the sheet…', async (opened, status) => {
+  const chosen = reportOptions.zipSelection(opened.options);
+  if (!chosen.length) throw new Error('Tick at least one file to put in the zip.');
+  const loaded = await freshSheet(opened, status);
+  const stem = stemOf(opened);
+  const files = [];
+  for (const id of chosen) {
+    if (id === 'labels') {
+      setText(status, 'Making your labels… (can take a minute)');
+      files.push([stem + ' labels.pdf', await labelsPdf()]);
+    } else if (id === 'check_txt') {
+      files.push([stem + ' sheet check.txt', reports.sheetCheckText(loaded)]);
+    } else {
+      const [kind, format] = id.split('_');
+      setText(status, 'Making the ' + REPORTS[kind].name.toLowerCase() + '…');
+      const file = await reportFile(kind, format, loaded, opened, status);
+      files.push([file.name, file.data]);
+    }
+    if (ws !== opened) return;
+  }
+  setText(status, 'Packing the zip…');
+  saveBlob(new Blob([zip(files)], { type: 'application/zip' }), stem + ' labels and reports.zip');
+}));
 
 // --- Upload ---
 (() => {

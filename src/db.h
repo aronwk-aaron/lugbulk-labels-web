@@ -37,6 +37,10 @@ struct Design {
     std::string label_spec;    // LabelSpec id
     std::string part_order;    // "heaviest" | "lightest" | "sheet"
     std::string hidden_parts;  // comma-separated LabelPart names
+    // The report options: a JSON object, stored as sent (checked with
+    // json_check::report_options_error first); "" if none saved. On
+    // put_design, nullopt keeps what's stored.
+    std::optional<std::string> report_options;
 };
 
 // One row of the run history log.
