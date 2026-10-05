@@ -139,9 +139,18 @@ export function computeLayout(width, height, show, nLines) {
   const topRow = show.element_id || show.qty;
   const nameRow = show.name || show.count;
   L.y_id = height - L.pad - L.id_size * 0.8;
-  const first = topRow ? L.y_id - L.id_size * 0.2 - L.small * 1.25 : height - L.pad - L.small * 0.85;
+  // The text lines (colors, price, description) between the top row and
+  // the name: L.line is their size, L.small unless that many lines don't
+  // fit above the name, when they shrink (to 55% at most) rather than run
+  // into it.
+  const firstAt = (s) => (topRow ? L.y_id - L.id_size * 0.2 - s * 1.25 : height - L.pad - s * 0.85);
+  const floor = nameRow ? L.pad + L.name_size * 0.22 + L.name_size * 0.75 + L.small * 0.15 : L.pad;
+  const bottomAt = (s) => firstAt(s) - (nLines - 1) * s * 1.2 - s * DESCENDER;
+  L.line = L.small;
+  while (nLines > 1 && L.line > L.small * 0.55 && bottomAt(L.line) < floor) L.line *= 0.95;
+  const first = firstAt(L.line);
   L.lines = [];
-  for (let i = 0; i < nLines; ++i) L.lines.push(first - i * L.small * 1.2);
+  for (let i = 0; i < nLines; ++i) L.lines.push(first - i * L.line * 1.2);
   const lastText = L.lines.length ? L.lines[L.lines.length - 1] : topRow ? L.y_id : height - L.pad;
   L.y_name = L.pad + L.name_size * 0.22;
   let lift = 0;
@@ -208,8 +217,8 @@ export function layoutLabel(record, width, height, show, measure) {
   let swatchW = 0;
   const color = show.swatch ? swatchRgb(record.lego_color, record.bl_color) : null;
   if (color && colorLines.length) {
-    const side = L.small * 1.2 * (colorLines.length - 1) + L.small * 0.95;
-    const bottom = L.lines[colorLines.length - 1] - L.small * 0.22;
+    const side = L.line * 1.2 * (colorLines.length - 1) + L.line * 0.95;
+    const bottom = L.lines[colorLines.length - 1] - L.line * 0.22;
     out.swatch = { x: textX, y: bottom, side, rgb: color, trans: isTransparent(record.lego_color, record.bl_color) };
     swatchW = side + L.pad * 0.5;
   }
@@ -217,13 +226,13 @@ export function layoutLabel(record, width, height, show, measure) {
   const nameRow = show.name || show.count;
   texts.forEach((text, i) => {
     const x = textX + (i < colorLines.length ? swatchW : 0);
-    const top = L.lines[i] + L.small * CAP_HEIGHT;
-    let bottom = L.lines[i] - L.small * (1.2 - CAP_HEIGHT);
+    const top = L.lines[i] + L.line * CAP_HEIGHT;
+    let bottom = L.lines[i] - L.line * (1.2 - CAP_HEIGHT);
     if (i + 1 === texts.length) {
       const limit = nameRow ? L.y_name + L.name_size * 0.75 + L.small * 0.15 : L.pad;
       bottom = Math.min(bottom, limit);
     }
-    const fit = fitText(text, L.small, L.small * 0.7, right - x, top - bottom, regular);
+    const fit = fitText(text, L.line, L.line * 0.7, right - x, top - bottom, regular);
     if (fit.lines.length === 1) {
       draw('regular', fit.size, x, L.lines[i], fit.lines[0]);
       return;
