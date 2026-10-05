@@ -219,6 +219,45 @@ function issue(row, kind, detail, elementId = '') {
   return { row, kind, detail, element_id: elementId };
 }
 
+// A money cell ("$0.0696", "1,234.5", "€2") as a number, or null.
+export function parsePrice(text) {
+  let t = trim(str(text)).replaceAll(',', '');
+  const negative = t.startsWith('-');
+  if (negative) t = trim(t.slice(1));
+  t = t.replace(/^(\$|€|£)\s*/, '');
+  if (!/^([0-9]+\.?[0-9]*|\.[0-9]+)$/.test(t)) return null;
+  return negative ? -Number(t) : Number(t);
+}
+
+// The price paid per piece of each element, from the sheet's price column
+// (layout.PRICE_HEADERS): {column, prices: Map element_id -> number}, with
+// column null when the sheet has none. The first row of an element wins;
+// blank or non-numeric prices are left out.
+export function unitPrices(rows) {
+  const prices = new Map();
+  const headerRow = findHeaderRow(rows);
+  if (headerRow === null) return { column: null, prices };
+  const header = rows[headerRow];
+  const norm = (s) => asciiLower(trim(str(s)).replace(/\s+/g, ' '));
+  const dataStart = headerRow + 2;
+  let colPrice = null;
+  for (const want of layout.PRICE_HEADERS.map(norm)) {
+    colPrice = header.findIndex((h) => norm(h) === want);
+    if (colPrice >= 0) break;
+  }
+  if (colPrice === null || colPrice < 0) return { column: null, prices };
+  const colId = findCol(header, layout.ELEMENT_ID_HEADERS);
+  // The data starts below the header; its next row is a subheader (qty
+  // markers) or blank in both layouts, never a part.
+  for (let r = dataStart; r < rows.length; r++) {
+    const id = cell(rows[r], colId);
+    if (!isValidElementId(id) || prices.has(id)) continue;
+    const price = parsePrice(cell(rows[r], colPrice));
+    if (price !== null) prices.set(id, price);
+  }
+  return { column: trim(str(header[colPrice])).replace(/\s+/g, ' '), prices };
+}
+
 // Pivots raw sheet rows (arrays of cell strings, as GET /sheets/:id/values
 // returns) into {records, issues}. Never throws on bad data — issues are
 // how bad data surfaces.

@@ -11,6 +11,10 @@ export const DESCRIPTION_HEADERS = ['Description'];
 export const LEGO_COLOR_HEADERS = ['LEGO Color', 'LEGO Colour'];
 export const BL_COLOR_HEADERS = ['BL Color', 'BrickLink Color', 'BL Colour', 'Color'];
 export const WEIGHT_HEADERS = ['Weight', 'Weight (g)', 'Weight g'];
+// The price paid per piece (the multi-year price views). Matched with runs
+// of whitespace as one space ("Cost\nEach" counts). Not "BL Price" or
+// "B&P Price": those are reference prices, not what was paid.
+export const PRICE_HEADERS = ['Price', 'Cost Each', 'Unit Price', 'Price Each', 'Cost Per Piece', 'Each'];
 
 export const COL_ELEMENT_ID = 1;
 export const COL_DESCRIPTION = 3;
