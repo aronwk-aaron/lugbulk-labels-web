@@ -178,6 +178,13 @@ jobs:
             echo "GET $gone -> $code"
             test "$code" = 404
           done
+          # A path no route matches gets a normal 404: a body, a length and
+          # the usual headers (Crow's bare one became a 500 behind Traefik).
+          curl -s -D gone.headers -o gone.body http://localhost:8080/favicon.ico
+          head -1 gone.headers | grep -q ' 404'
+          grep -qi '^content-length: 9' gone.headers
+          grep -qi '^server: lugbulk-labels-web' gone.headers
+          grep -qx 'not found' gone.body
           # Privacy policy and terms (linked from Google's consent screen).
           curl -fsS http://localhost:8080/privacy | grep -q 'Limited Use'
           curl -fsS http://localhost:8080/terms | grep -q 'Terms of service'

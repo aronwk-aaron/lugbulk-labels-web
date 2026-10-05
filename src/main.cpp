@@ -1220,5 +1220,11 @@ int main() {
             return crow::response(200, "saved");
         });
 
+    // Anything no route matches (/favicon.ico, scanners' guesses): a plain
+    // 404 with a body, like every other "not found". Without this, Crow's
+    // own 404 has no body or Content-Length and skips the middleware's
+    // headers, and Traefik passed it on as a 500.
+    CROW_CATCHALL_ROUTE(app)([]() { return crow::response(404, "not found"); });
+
     app.port(8080).multithreaded().run();
 }
