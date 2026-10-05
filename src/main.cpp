@@ -1220,5 +1220,17 @@ int main() {
             return crow::response(200, "saved");
         });
 
+    // Anything no other route matches (/favicon.ico, scanners' guesses): a
+    // plain 404 with a body, like every other "not found". This has to be a
+    // real route, registered last (on a tie Crow picks the route registered
+    // first): for a path with no route at all, Crow answers as soon as it
+    // has parsed the URL, before the headers, and skips the catch-all route
+    // and the middleware. That response came out cut short, and Traefik
+    // passed it on as a 500.
+    CROW_ROUTE(app, "/<path>")
+        .methods(crow::HTTPMethod::Get, crow::HTTPMethod::Post, crow::HTTPMethod::Put,
+                 crow::HTTPMethod::Delete, crow::HTTPMethod::Patch)(
+            [](const std::string&) { return crow::response(404, "not found"); });
+
     app.port(8080).multithreaded().run();
 }
