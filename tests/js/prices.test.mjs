@@ -66,3 +66,20 @@ test('the price switches carry over to the reports', async () => {
   assert.ok(parts[1].startsWith('1,3001,') && parts[1].endsWith(',0.0696,69.81'));
   assert.ok(parts[2].endsWith(',,'));
 });
+
+test('amounts get thousands separators, except in CSVs', async () => {
+  const { centsText } = await import('../../static/js/reports.js');
+  assert.equal(centsText(3828, '$'), '$3,828.00');
+  assert.equal(centsText(1234567.891, '$'), '$1,234,567.89');
+  assert.equal(centsText(-0.29, '$'), '-$0.29');
+  assert.equal(centsText(3828, '', true), '3828.00');
+});
+
+test('wrapping breaks at spaces, then at a hyphen, then (last) mid-word', async () => {
+  const { wrapLines } = await import('../../static/js/labels.js');
+  const w = (t) => t.length; // one unit per character
+  assert.deepEqual(wrapLines('Chris Madeup-Longername', 17, w), ['Chris', 'Madeup-Longername']);
+  assert.deepEqual(wrapLines('Chris Madeup-Longername', 12, w), ['Chris', 'Madeup-', 'Longername']);
+  assert.deepEqual(wrapLines('BL: Trans-Clear', 11, w), ['BL:', 'Trans-Clear']); // a space break first
+  assert.deepEqual(wrapLines('ABCDEFGHIJ', 4, w), ['ABCD', 'EFGH', 'IJ']);
+});
