@@ -129,6 +129,35 @@ export function orderedParts(records, order, labelOrder = 'heaviest') {
   return summarizeParts(records, order === 'labels' ? labelOrder : order);
 }
 
+// ---- prices -----------------------------------------------------------------
+
+// Whether the reports show prices: the label switches (options.labels,
+// "Price each" and "Lot price") carry over to them, when some record has a
+// price (records.addPrices). {each, lot, sign, priceOf: Map id -> price}.
+export function pricing(options, records) {
+  const o = normalizeOptions(options).labels;
+  const priceOf = new Map();
+  let sign = '';
+  for (const r of records) {
+    if (r.price === null || r.price === undefined) continue;
+    if (!priceOf.has(r.element_id)) priceOf.set(r.element_id, r.price);
+    if (!sign && r.currency) sign = r.currency;
+  }
+  const priced = priceOf.size > 0;
+  return { each: o.price && priced, lot: o.lot_price && priced, sign, priceOf };
+}
+
+// An amount in whole cents, with the sheet's currency sign: "$12.50".
+export function centsText(x, sign = '') {
+  return `${x < 0 ? '-' : ''}${sign}${(Math.round(Math.abs(x) * 100) / 100).toFixed(2)}`;
+}
+
+// What a record's lot costs (qty x price), or null without a price.
+function lotCost(r, prices) {
+  const price = prices.priceOf.get(r.element_id);
+  return price === undefined ? null : parseQty(r.qty) * price;
+}
+
 // Per-part summaries by element id (for weights).
 function partIndex(records) {
   return new Map(summarizeParts(records, 'sheet').map((p) => [p.element_id, p]));
@@ -144,12 +173,13 @@ export function lotCountsByPerson(records, sortBy = 'last') {
   for (const r of records) {
     let t = byPerson.get(r.person);
     if (!t) {
-      t = { person: r.person, lot_count: 0, total_pieces: 0, grams: 0, estimated: false, unknown: false };
+      t = { person: r.person, lot_count: 0, total_pieces: 0, grams: 0, estimated: false, unknown: false, cost: 0 };
       byPerson.set(r.person, t);
     }
     const qty = parseQty(r.qty);
     t.lot_count += 1;
     t.total_pieces += qty;
+    if (r.price !== null && r.price !== undefined) t.cost += qty * r.price;
     const p = parts.get(r.element_id);
     if (p && p.weight !== null) {
       t.grams += qty * p.weight;
@@ -171,23 +201,35 @@ function totalMassText(t) {
 
 // reports::lot_counts_csv: "person,lot_count,total_pieces" + a row per
 // person with at least `minLots` lots.
-export function lotCountsCsv(records, sortBy = 'last', minLots = 0) {
-  let out = 'person,lot_count,total_pieces\r\n';
+// With `prices` (pricing()) showing any price, a total_price column too.
+export function lotCountsCsv(records, sortBy = 'last', minLots = 0, prices = null) {
+  const money = prices && (prices.each || prices.lot);
+  let out = `person,lot_count,total_pieces${money ? ',total_price' : ''}\r\n`;
   for (const t of lotCountsByPerson(records, sortBy)) {
     if (t.lot_count < minLots) continue;
-    out += `${csvField(t.person)},${t.lot_count},${formatCount(t.total_pieces)}\r\n`;
+    out += `${csvField(t.person)},${t.lot_count},${formatCount(t.total_pieces)}`;
+    if (money) out += `,${centsText(t.cost)}`;
+    out += '\r\n';
   }
   return out;
 }
 
 // reports::parts_csv, one row per part in the order given.
-export function partsCsv(parts) {
-  let out = 'order,element_id,description,lego_color,bl_color,total_pieces,people,grams_per_piece,weight_source\r\n';
+// With `prices` (pricing()): price_each and/or total_price columns too.
+export function partsCsv(parts, prices = null) {
+  const each = !!(prices && prices.each);
+  const lot = !!(prices && prices.lot);
+  let out = 'order,element_id,description,lego_color,bl_color,total_pieces,people,grams_per_piece,weight_source' +
+    `${each ? ',price_each' : ''}${lot ? ',total_price' : ''}\r\n`;
   parts.forEach((p, i) => {
     const grams = p.weight === null || p.weight === undefined ? '' : formatG(p.weight, 3);
     out +=
       `${i + 1},${csvField(p.element_id)},${csvField(p.description)},${csvField(p.lego_color)},` +
-      `${csvField(p.bl_color)},${formatCount(p.pieces)},${p.lots},${grams},${p.weight_source}\r\n`;
+      `${csvField(p.bl_color)},${formatCount(p.pieces)},${p.lots},${grams},${p.weight_source}`;
+    const price = prices ? prices.priceOf.get(p.element_id) : undefined;
+    if (each) out += `,${price === undefined ? '' : formatMoney(price)}`;
+    if (lot) out += `,${price === undefined ? '' : centsText(price * p.pieces)}`;
+    out += '\r\n';
   });
   return out;
 }
@@ -205,8 +247,9 @@ export function sheetCheckText(loaded) {
 // The CSV of a report ('parts' | 'lots') with its options.
 export function reportCsv(kind, records, options, labelOrder = 'heaviest') {
   const o = normalizeOptions(options);
-  if (kind === 'parts') return partsCsv(orderedParts(records, o.parts.order, labelOrder));
-  if (kind === 'lots') return lotCountsCsv(records, o.lots.sort, o.lots.min_lots);
+  const prices = pricing(o, records);
+  if (kind === 'parts') return partsCsv(orderedParts(records, o.parts.order, labelOrder), prices);
+  if (kind === 'lots') return lotCountsCsv(records, o.lots.sort, o.lots.min_lots, prices);
   throw new Error(`no CSV for ${kind}`);
 }
 
@@ -284,6 +327,7 @@ export function wrapText(text, maxW, width) {
 // default) listing their labels in label order, with a tick box per line.
 export async function checklistPdf(records, options = DEFAULTS, { labelOrder = 'heaviest', images } = {}) {
   const o = normalizeOptions(options).checklist;
+  const prices = pricing(options, records);
   const ordered = orderRecords(records, o.order === 'labels' ? labelOrder : o.order);
   const parts = partIndex(records);
   const byPerson = new Map();
@@ -299,25 +343,38 @@ export async function checklistPdf(records, options = DEFAULTS, { labelOrder = '
   columns.push({ header: 'Element', width: 55 }, { header: 'Description', width: 160, flex: true });
   if (o.color) columns.push({ header: 'LEGO / BrickLink color', width: 145 });
   if (o.weight) columns.push({ header: 'Weight', width: 60 });
-  columns.push({ header: 'Qty', width: 45 }, { header: 'Label', width: 55 });
+  columns.push({ header: 'Qty', width: 45 });
+  if (prices.each) columns.push({ header: 'Each', width: 50 });
+  if (prices.lot) columns.push({ header: 'Lot price', width: 58 });
+  columns.push({ header: 'Label', width: 55 });
 
   const sections = people.map((person) => {
     const rows = [];
     let pieces = 0;
+    let cost = 0;
     for (const r of byPerson.get(person)) {
       pieces += parseQty(r.qty);
+      const lot = lotCost(r, prices);
+      if (lot !== null) cost += lot;
       const cells = [];
       if (o.checkbox) cells.push('');
       if (o.photo) cells.push('');
       cells.push(r.element_id, r.description);
       if (o.color) cells.push(joinColors(r.lego_color, r.bl_color));
       if (o.weight) cells.push(weightText(parts.get(r.element_id) ?? { weight: null }));
-      cells.push(r.qty, r.part_total > 0 ? `${r.part_seq} of ${r.part_total}` : '');
+      cells.push(r.qty);
+      if (prices.each) {
+        const price = prices.priceOf.get(r.element_id);
+        cells.push(price === undefined ? '' : `${prices.sign}${formatMoney(price)}`);
+      }
+      if (prices.lot) cells.push(lot === null ? '' : centsText(lot, prices.sign));
+      cells.push(r.part_total > 0 ? `${r.part_seq} of ${r.part_total}` : '');
       rows.push({ cells, image: o.photo ? r.element_id : null });
     }
     if (o.packed_by) rows.push({ signoff: true });
     const n = byPerson.get(person).length;
-    return { title: person, lines: [`${n} lots, ${formatCount(pieces)} pieces`], rows };
+    const money = prices.lot ? `, ${centsText(cost, prices.sign)}` : '';
+    return { title: person, lines: [`${n} lots, ${formatCount(pieces)} pieces${money}`], rows };
   });
 
   return tablePdf({
@@ -343,6 +400,7 @@ const ORDER_WORDS = {
 // The parts list: one row per part.
 export async function partsPdf(records, options = DEFAULTS, { labelOrder = 'heaviest', images } = {}) {
   const o = normalizeOptions(options).parts;
+  const prices = pricing(options, records);
   let parts = orderedParts(records, o.order, labelOrder);
   // Grouped by the color as shown (both names, or the one column that's on).
   const colorKey = (p) => colorCells(o, p)[0] ?? joinColors(p.lego_color, p.bl_color);
@@ -367,9 +425,12 @@ export async function partsPdf(records, options = DEFAULTS, { labelOrder = 'heav
   if (o.people) columns.push({ header: 'People', width: 40 });
   if (o.weight) columns.push({ header: 'Weight', width: 70 });
   if (o.total_weight) columns.push({ header: 'Total weight', width: 70 });
+  if (prices.each) columns.push({ header: 'Each', width: 50 });
+  if (prices.lot) columns.push({ header: 'Total price', width: 62 });
 
   let totalPieces = 0;
   let totalLabels = 0;
+  let totalCost = 0;
   const rows = [];
   let group = null;
   parts.forEach((p, i) => {
@@ -392,6 +453,10 @@ export async function partsPdf(records, options = DEFAULTS, { labelOrder = 'heav
     if (o.total_weight) {
       cells.push(p.weight === null ? '?' : `${p.weight_source === 'estimate' ? '~' : ''}${massText(p.weight * p.pieces)}`);
     }
+    const price = prices.priceOf.get(p.element_id);
+    if (price !== undefined) totalCost += price * p.pieces;
+    if (prices.each) cells.push(price === undefined ? '' : `${prices.sign}${formatMoney(price)}`);
+    if (prices.lot) cells.push(price === undefined ? '' : centsText(price * p.pieces, prices.sign));
     rows.push({ cells, image: o.photo ? p.element_id : null });
   });
 
@@ -399,6 +464,7 @@ export async function partsPdf(records, options = DEFAULTS, { labelOrder = 'heav
     `${parts.length} parts, ${formatCount(totalPieces)} pieces, ${totalLabels} labels — ` +
     ORDER_WORDS[o.order];
   if (o.group_by_color) stats += ', grouped by color';
+  if (prices.lot) stats += ` — ${centsText(totalCost, prices.sign)} in all`;
   return tablePdf({
     docTitle: o.title || 'Parts list',
     size: pageSize(o),
@@ -412,6 +478,8 @@ export async function partsPdf(records, options = DEFAULTS, { labelOrder = 'heav
 // Lot counts: one row per person.
 export async function lotCountsPdf(records, options = DEFAULTS) {
   const o = normalizeOptions(options).lots;
+  const prices = pricing(options, records);
+  const money = prices.each || prices.lot;
   const all = lotCountsByPerson(records, o.sort);
   const totals = all.filter((t) => t.lot_count >= o.min_lots);
 
@@ -419,16 +487,19 @@ export async function lotCountsPdf(records, options = DEFAULTS) {
   if (o.lots) columns.push({ header: 'Lots', width: 100 });
   if (o.pieces) columns.push({ header: 'Total pieces', width: 120 });
   if (o.total_weight) columns.push({ header: 'Total weight', width: 100 });
+  if (money) columns.push({ header: 'Total price', width: 90 });
   const cellsFor = (label, t) => {
     const cells = [label];
     if (o.lots) cells.push(String(t.lot_count));
     if (o.pieces) cells.push(formatCount(t.total_pieces));
     if (o.total_weight) cells.push(totalMassText(t));
+    if (money) cells.push(centsText(t.cost, prices.sign));
     return cells;
   };
 
-  const sum = { lot_count: 0, total_pieces: 0, grams: 0, estimated: false, unknown: false };
+  const sum = { lot_count: 0, total_pieces: 0, grams: 0, estimated: false, unknown: false, cost: 0 };
   const rows = totals.map((t) => {
+    sum.cost += t.cost;
     sum.lot_count += t.lot_count;
     sum.total_pieces += t.total_pieces;
     sum.grams += t.grams;

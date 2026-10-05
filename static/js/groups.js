@@ -1,4 +1,4 @@
-// Groups: a couple or a family whose orders are packed as one. Each group
+// Families: people whose orders are packed as one (any number of people). Each group
 // has a name and its members' names (matched like in Compare years: case
 // and spacing ignored). With `combine` on, applyGroups() turns the members'
 // records into one per part under the group's name, quantities added up,
@@ -29,13 +29,12 @@ function cleanName(v) {
   return [...s].slice(0, MAX_NAME).join('').trim();
 }
 
-// "Ann & Bob Lee" for two people with one last name, "Lee family" for more,
-// else the names joined: "Ann Lee & Cy Doe", "Ann Lee, Bob Roe & Cy Doe".
+// "Lee family" when everyone has the same last name, else the names joined:
+// "Ann Lee & Cy Doe", "Ann Lee, Bob Roe & Cy Doe".
 export function defaultName(members) {
   const words = members.map((m) => m.split(' '));
   const last = words.map((w) => w.at(-1));
   const shared = words.every((w) => w.length > 1) && last.every((l) => personKey(l) === personKey(last[0]));
-  if (shared && members.length === 2) return cleanName(`${words[0].slice(0, -1).join(' ')} & ${members[1]}`);
   if (shared) return cleanName(`${last[0]} family`);
   if (members.length === 2) return cleanName(`${members[0]} & ${members[1]}`);
   return cleanName(`${members.slice(0, -1).join(', ')} & ${members.at(-1)}`);

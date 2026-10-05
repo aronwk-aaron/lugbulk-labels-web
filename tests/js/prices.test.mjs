@@ -50,3 +50,19 @@ test('price switches default off in the report options', () => {
   assert.deepEqual(opts.normalizeOptions(null).labels, { price: false, lot_price: false });
   assert.deepEqual(opts.normalizeOptions({ labels: { price: true, lot_price: 'yes' } }).labels, { price: true, lot_price: false });
 });
+
+test('the price switches carry over to the reports', async () => {
+  const pivot = records.pivotRows(rows);
+  const priced = records.addPrices(pivot, pivot.rows).records;
+  const on = opts.normalizeOptions({ labels: { price: true, lot_price: true } });
+  const { reportCsv, pricing } = await import('../../static/js/reports.js');
+  assert.deepEqual(pricing(opts.normalizeOptions(null), priced).each, false);
+  // Off (the default): the CSVs are as before.
+  assert.equal(reportCsv('lots', priced, opts.normalizeOptions(null)).split('\r\n')[0], 'person,lot_count,total_pieces');
+  const lots = reportCsv('lots', priced, on).split('\r\n');
+  assert.deepEqual(lots.slice(0, 3), ['person,lot_count,total_pieces,total_price', 'Ann Lee,1,1000,69.60', 'Bob Roe,2,5,0.21']);
+  const parts = reportCsv('parts', priced, on, 'sheet').split('\r\n');
+  assert.ok(parts[0].endsWith(',price_each,total_price'));
+  assert.ok(parts[1].startsWith('1,3001,') && parts[1].endsWith(',0.0696,69.81'));
+  assert.ok(parts[2].endsWith(',,'));
+});

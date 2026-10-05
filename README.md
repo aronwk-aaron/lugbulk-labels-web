@@ -109,16 +109,20 @@ can still open sheets already in their list.
   `BL Price` or `B&P Price`); rows without an element ID, like fees and
   shipping, don't count. All in the browser, nothing stored. The tables
   sort and filter in the browser (DataTables); people are picked from
-  searchable lists. Couples and families can be grouped here too, and the
-  viewer chooses whether a group shows as one person or as its members.
+  searchable lists. Families can be set up here too, and the viewer
+  chooses whether a family shows as one person or as its members.
 - **Prices on labels** — two label switches, off by default: **Price each**
   (from the sheet's `Price` / `Cost Each` column, with the sheet's currency
   sign) and **Lot price** (that label's quantity times it), printed as
-  "$0.10 each · Lot $2.00". Saved with the report settings rather than the
+  "$0.10 each · Lot $2.00". The same switches carry over to the other
+  printables: the packing checklist gets Each and Lot price columns and each
+  person's total, the parts list Each and Total price columns and a grand
+  total, and lot counts a Total price column (also in the CSVs). The page
+  says so when a sheet has no price column. Saved with the report settings rather than the
   label design's hide list, so designs saved earlier don't start showing them.
-- **Couples and families** — group people who get one order together
-  (a couple, a family): with "Pack each group as one person" on, their
-  parts are added up per part and packed under the group's name on the
+- **Families** — put people who get one order together in a family (any
+  number of people): with "Pack each family as one person" on, their
+  parts are added up per part and packed under the family's name on the
   labels, packing checklist, parts list and lot counts. Saved with the
   sheet's report settings (or in this browser for uploads).
 - **Check sheet** — label count and any data issues (non-numeric
@@ -396,7 +400,7 @@ or with the compose file: `LUGBULK_TAG=canary docker compose pull && docker comp
 | `src/spreadsheet.{h,cpp}` | Reads `.xlsx` (bounded unzip + SpreadsheetML) and `.csv` — no longer used by a route; kept as the reference `static/js/spreadsheet.js` is tested against |
 | `src/records.{h,cpp}` | Row cap, per-run size limits, BrickLink data on records, the "Check sheet" JSON |
 | `static/js/` | Browser ports of the pure data logic (plain ES modules, served at `/static/js/<name>.js`): `pivot.js`, `ordering.js`, `colors.js`, `layout.js`, `records.js`, `spreadsheet.js`, `load.js`, and the reports (`reports.js`, `report_options.js`, `printf.js`) and zip writer (`zip.js`) |
-| `static/js/groups.js`, `groups_ui.js`, `combo.js` | Couples and families: groups saved with the report options and applied to the records before anything is made, their editor, and the searchable person dropdown it and Compare years use; `tests/js/groups.test.mjs` |
+| `static/js/groups.js`, `groups_ui.js`, `combo.js` | Families: saved with the report options and applied to the records before anything is made, their editor, and the searchable person dropdown it and Compare years use; `tests/js/groups.test.mjs` |
 | `static/js/years.js`, `years_page.js` | "Compare years": several sheets combined (people by name plus merges, parts by element ID, prices from the sheet's price column) and its tables and CSVs; the dashboard section that shows them; `tests/js/years.test.mjs` |
 | `static/js/vendor/` | Third-party browser modules, pinned and unmodified: `pdf-lib.js`, `qrcodegen.js`, `datatables.js` (see its README) |
 | `tests/tests.cpp` | Unit tests (`ctest`) |

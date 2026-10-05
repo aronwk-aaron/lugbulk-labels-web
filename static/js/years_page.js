@@ -236,9 +236,9 @@ export function initYears({ api, saveBlob }) {
         renderView();
       }
     },
-    combineLabel: 'Show each group as one person in the tables',
+    combineLabel: 'Show each family as one person in the tables',
   });
-  const groupsSummary = () => `Couples and families: ${groups.list.length} group${groups.list.length === 1 ? '' : 's'}` +
+  const groupsSummary = () => `Families: ${groups.list.length === 1 ? '1 family' : `${groups.list.length} families`}` +
     (groups.list.length && !groups.combine ? ' (shown as separate people)' : '');
 
   // ---- the tables ----
@@ -269,7 +269,7 @@ export function initYears({ api, saveBlob }) {
         const isGroup = new Set(data.people.filter((p) => p.group).map((p) => p.name));
         const rows = years.peopleSummary(data).map((t) => {
           const who = el('td', {}, [personLink(t.person)]);
-          if (isGroup.has(t.person)) who.appendChild(el('span', { class: 'muted', text: ' (group)' }));
+          if (isGroup.has(t.person)) who.appendChild(el('span', { class: 'muted', text: ' (family)' }));
           const cells = [who];
           for (const y of ys) {
             const v = t.years[y];

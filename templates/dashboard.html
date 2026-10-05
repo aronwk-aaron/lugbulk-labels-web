@@ -234,7 +234,7 @@
   .combo-list [role=option].active { background: var(--button-hover); }
   .combo-list .none { padding: 0.5rem 0.75rem; color: var(--muted); font-style: italic; }
 
-  /* Groups (couples, families): static/js/groups_ui.js. */
+  /* Families: static/js/groups_ui.js. */
   .group-editor .group-combine { margin: 0.4rem 0 0.6rem; }
   .group-list { display: flex; flex-direction: column; gap: 0.5rem; margin-bottom: 0.6rem; }
   .group-list .group { border: 1px solid var(--border); border-radius: 6px; padding: 0.5rem 0.6rem;
@@ -247,7 +247,9 @@
           border: 1px solid var(--border); border-radius: 999px; padding: 0.1rem 0.2rem 0.1rem 0.6rem; }
   .chip.absent { opacity: 0.6; font-style: italic; }
   .chip-x { border: 0; background: none; padding: 0 0.35rem; line-height: 1; font-size: 1rem; }
-  .group-new { display: flex; flex-wrap: wrap; gap: 0.4rem; align-items: center; }
+  .group-new { border: 1px dashed var(--border-strong); border-radius: 6px; padding: 0.5rem 0.6rem;
+               background: var(--surface); }
+  .group-head.group-new-title { font-weight: 600; justify-content: space-between; }
   .group-new .combo input { width: 11rem; }
 
   /* DataTables (static/js/vendor/datatables.js): only its sort arrows are styled. */
@@ -340,9 +342,9 @@
         <ul id="years-merges"></ul>
       </details>
       <details id="years-groups">
-        <summary id="years-groups-summary">Couples and families</summary>
-        <p class="note" style="margin-top:0.5rem">Group a couple or a family to see their parts
-          together. Kept in this browser.</p>
+        <summary id="years-groups-summary">Families</summary>
+        <p class="note" style="margin-top:0.5rem">Put a family's people together to see their parts
+          as one. Kept in this browser.</p>
         <div id="years-groups-editor"></div>
       </details>
 
@@ -431,6 +433,7 @@
         </div>
         <h4>Show on each label</h4>
         <div class="switches" id="switches"></div>
+        <p class="note" id="price-note" style="margin:0.4rem 0 0"></p>
         <div class="actions" style="margin-top:0.9rem">
           <button type="button" id="test-page-btn">Print alignment test page</button>
         </div>
@@ -438,10 +441,10 @@
       </div>
 
       <div class="panel" id="groups-panel">
-        <h3>Couples and families</h3>
-        <p class="note">Group people who get one order together: their parts are added up and
-          packed as one, under the group's name, on the labels, checklist, parts list and lot
-          counts. <span id="groups-where"></span></p>
+        <h3>Families</h3>
+        <p class="note">Put people who get one order together in a family: their parts are added
+          up and packed as one, under the family's name, on the labels, checklist, parts list and
+          lot counts. <span id="groups-where"></span></p>
         <div id="groups-editor"></div>
         <p class="status muted" id="groups-status"></p>
       </div>
@@ -1244,7 +1247,7 @@ $('test-page-btn').addEventListener('click', async () => {
   }
 });
 
-// --- Couples and families ---
+// --- Families ---
 // Groups are saved with the report settings (ws.options.groups). `ws.raw`
 // is the sheet as read; `ws.loaded`, what everything is made from, has each
 // group's members combined into one person (static/js/groups.js).
@@ -1268,8 +1271,8 @@ const groupsUi = groupEditor($('groups-editor'), {
     optionsChanged($('groups-status'), false);
     if (ws.raw) showSummary();
   },
-  combineLabel: 'Pack each group as one person',
-  onFull: () => setText($('groups-status'), 'That’s as many groups as can be saved with the sheet.', true),
+  combineLabel: 'Pack each family as one person',
+  onFull: () => setText($('groups-status'), 'That’s as many families as can be saved with the sheet.', true),
 });
 
 // --- Check (summary + issues) ---
@@ -1300,9 +1303,14 @@ function showSummary() {
   if (ws.loaded !== loaded) {
     const here = new Set(loaded.records.map(r => groupKey(r.person)));
     const n = ws.options.groups.list.filter(g => g.members.some(m => here.has(groupKey(m)))).length;
-    summary.appendChild(el('span', { text: ' · ' + plural(n, 'group') + ' packed together (' +
+    summary.appendChild(el('span', { text: ' · ' + (n === 1 ? '1 family' : n + ' families') + ' packed together (' +
                                            plural(ws.loaded.records.length, 'label') + ')' }));
   }
+  // Prices come from the sheet's price column; say so when there isn't one.
+  const priced = loaded.records.some(r => r.price !== null && r.price !== undefined);
+  setText($('price-note'), priced
+    ? 'Price each and Lot price also go on the packing checklist, parts list and lot counts.'
+    : 'This sheet has no price column (“Price” or “Cost Each”), so prices can’t be shown.', !priced);
   if (loaded.lookupError) {
     summary.appendChild(el('span', { class: 'muted',
       text: ' · no BrickLink data this time (' + loaded.lookupError + ')' }));

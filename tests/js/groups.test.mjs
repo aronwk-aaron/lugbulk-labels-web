@@ -1,4 +1,4 @@
-// Tests for static/js/groups.js (couples and families packed as one), its
+// Tests for static/js/groups.js (families packed as one), its
 // place in the report options, and groups in Compare years. All names and
 // orders here are made up. `node --test tests/js/`
 
@@ -12,7 +12,7 @@ import * as reports from '../../static/js/reports.js';
 import * as years from '../../static/js/years.js';
 
 test('defaultName', () => {
-  assert.equal(groups.defaultName(['Ann Lee', 'Bob Lee']), 'Ann & Bob Lee');
+  assert.equal(groups.defaultName(['Ann Lee', 'Bob Lee']), 'Lee family');
   assert.equal(groups.defaultName(['Ann Lee', 'Bob Lee', 'Cy lee']), 'Lee family');
   assert.equal(groups.defaultName(['Ann Lee', 'Cy Doe']), 'Ann Lee & Cy Doe');
   assert.equal(groups.defaultName(['Ann Lee', 'Bob Roe', 'Cy Doe']), 'Ann Lee, Bob Roe & Cy Doe');
@@ -35,7 +35,7 @@ test('normalizeGroups', () => {
     combine: false,
     list: [
       { name: 'The Lees', members: ['Ann Lee', 'Bob Lee'] },
-      { name: 'Cy & Dee Doe', members: ['Cy Doe', 'Dee Doe'] },
+      { name: 'Doe family', members: ['Cy Doe', 'Dee Doe'] },
     ],
   });
   const many = { list: Array.from({ length: 60 }, (_, i) => ({ members: [`A${i}`, `B${i}`] })) };
