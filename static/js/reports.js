@@ -48,6 +48,14 @@ export function formatCount(value) {
   return formatG(value, 6);
 }
 
+// A price or amount: at least 2 decimals, up to 4 ("0.0696", "12.50").
+export function formatMoney(x) {
+  if (x === null || x === undefined) return '';
+  let s = (Math.round(x * 1e6) / 1e6).toFixed(4);
+  while (s.endsWith('0') && s.length - s.indexOf('.') > 3) s = s.slice(0, -1);
+  return s;
+}
+
 // One RFC 4180 CSV field, with the server's guard against formula
 // injection: a field starting with = + - @ tab or CR gets a leading
 // apostrophe (names come from the shared sheet's column headers).

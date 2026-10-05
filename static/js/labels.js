@@ -22,7 +22,7 @@ import { PDFDocument, StandardFonts, rgb } from './vendor/pdf-lib.js';
 import qrcodegen from './vendor/qrcodegen.js';
 import { isLight, isTransparent, swatchRgb } from './colors.js';
 import { helveticaMeasure } from './afm.js';
-import { winAnsi } from './reports.js';
+import { formatMoney, winAnsi } from './reports.js';
 
 export { helveticaMeasure };
 
@@ -48,6 +48,23 @@ export function optionsFromHidden(hidden = '') {
     show[name] = false;
   }
   return show;
+}
+
+// The price line, when `show.price` (the price per piece) or
+// `show.lot_price` (this label's qty times it) is on and the record has a
+// price: "$0.10 each · Lot $1.50". '' otherwise. These two aren't in
+// LABEL_PARTS: they are off unless turned on (saved with the report
+// options), so designs saved before them don't change.
+export function priceLine(record, show) {
+  if (record.price === null || record.price === undefined) return '';
+  const sign = record.currency || '';
+  const parts = [];
+  if (show.price) parts.push(`${sign}${formatMoney(record.price)} each`);
+  if (show.lot_price) {
+    const lot = Number(record.qty.replaceAll(',', '')) * record.price;
+    if (Number.isFinite(lot)) parts.push(`Lot ${sign}${(Math.round(lot * 100) / 100).toFixed(2)}`);
+  }
+  return parts.join(' \u00b7 ');
 }
 
 // Where a label's QR code points: BrickLink's search, which resolves LEGO
@@ -154,6 +171,8 @@ export function layoutLabel(record, width, height, show, measure) {
   if (show.lego_color && record.lego_color) colorLines.push(winAnsi(`LEGO: ${record.lego_color}`));
   if (show.bl_color && record.bl_color) colorLines.push(winAnsi(`BL: ${record.bl_color}`));
   const texts = colorLines.slice();
+  const price = priceLine(record, show);
+  if (price) texts.push(winAnsi(price));
   if (show.description && record.description) texts.push(winAnsi(record.description));
   const L = computeLayout(width, height, show, texts.length);
   const out = { image: null, qr: null, swatch: null, texts: [] };

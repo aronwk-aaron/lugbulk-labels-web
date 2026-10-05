@@ -75,6 +75,10 @@ export const DEFAULTS = Object.freeze({
     min_lots: 0,
   }),
   zip: Object.freeze(Object.fromEntries(ZIP_FILES.map(([id]) => [id, true]))),
+  // Prices on the labels: the price per piece, and the lot's (qty x price).
+  // Off unless turned on; kept here, not in the label design's hide list,
+  // so designs saved before them don't start showing them.
+  labels: Object.freeze({ price: false, lot_price: false }),
   // Couples and families packed as one (groups.js).
   groups: Object.freeze({ combine: true, list: Object.freeze([]) }),
 });

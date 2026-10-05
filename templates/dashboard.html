@@ -681,6 +681,16 @@ for (const [id, text] of PARTS) {
   const box = el('input', { type: 'checkbox', id: 'part-' + id });
   $('switches').appendChild(el('label', {}, [box, document.createTextNode(text)]));
 }
+// Prices: saved with the report options (report_options.js `labels`), not
+// the design's hide list, so they stay off on designs saved before them.
+for (const [id, text, title] of [
+  ['price', 'Price each', "The price per piece, from the sheet's price column"],
+  ['lot_price', 'Lot price', "This person's quantity times the price each"],
+]) {
+  const box = el('input', { type: 'checkbox', id: 'opt-labels-' + id });
+  box.addEventListener('change', () => optionsChanged($('design-status'), false));
+  $('switches').appendChild(el('label', { title }, [box, document.createTextNode(text)]));
+}
 
 const UPLOAD_DESIGN_KEY = 'lugbulk.uploadDesign';
 function uploadDesign() {
@@ -1019,7 +1029,8 @@ async function makeLabels(loaded, { preview = false, say = () => {} } = {}) {
     const ids = [...new Set(records.filter(Boolean).map((r) => r.element_id))];
     images = await fetchPhotos(ids, (done, total) => say('Fetching photos ' + done + '/' + total));
   }
-  return runLabelJob({ cmd: 'labels', records, spec, hidden: design.hide, maxPages, images }, (p) => {
+  const prices = ws && ws.options ? ws.options.labels : null;
+  return runLabelJob({ cmd: 'labels', records, spec, hidden: design.hide, prices, maxPages, images }, (p) => {
     if (p.phase === 'pages' && p.pages > 1) say('Page ' + p.page + ' of ' + p.pages);
   });
 }
