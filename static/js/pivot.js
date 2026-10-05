@@ -164,7 +164,7 @@ function fixed6(x) {
 
 // Normalized display text for a quantity, like the C++ format_qty: whole
 // numbers without a decimal point, else %f with trailing zeros dropped.
-function formatQty(qty) {
+export function formatQty(qty) {
   // static_cast<long long>(qty) == qty: whole and within long long range
   // (x86 gives LLONG_MIN for anything out of range).
   if (Number.isInteger(qty) && qty >= -(2 ** 63) && qty < 2 ** 63) {

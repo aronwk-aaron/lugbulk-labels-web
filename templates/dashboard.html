@@ -19,6 +19,7 @@
     --button-bg: #ffffff; --button-hover: #eef1f5;
     --accent: #1f6feb; --accent-hover: #1a5fcc; --accent-fg: #ffffff; --accent-soft: #1f6feb14;
     --error: #b42318; --ok: #1a7f37; --warn: #9a6700; --focus: #1f6feb66;
+    --stripe: #f5f7fa;
   }
   :root[data-theme="dark"] {
     color-scheme: dark;
@@ -27,6 +28,7 @@
     --button-bg: #20262e; --button-hover: #29313b;
     --accent: #4b8ff5; --accent-hover: #6aa3f7; --accent-fg: #0b0f14; --accent-soft: #4b8ff51f;
     --error: #f97066; --ok: #4ac26b; --warn: #d4a72c; --focus: #4b8ff566;
+    --stripe: #1b2027;
   }
   @media (prefers-color-scheme: dark) {
     :root:not([data-theme="light"]) {
@@ -36,6 +38,7 @@
       --button-bg: #20262e; --button-hover: #29313b;
       --accent: #4b8ff5; --accent-hover: #6aa3f7; --accent-fg: #0b0f14; --accent-soft: #4b8ff51f;
       --error: #f97066; --ok: #4ac26b; --warn: #d4a72c; --focus: #4b8ff566;
+      --stripe: #1b2027;
     }
   }
   * { box-sizing: border-box; }
@@ -214,6 +217,51 @@
   #years-names summary { cursor: pointer; }
   #years-names .row { display: flex; flex-wrap: wrap; gap: 0.4rem; align-items: center; margin: 0.4rem 0; }
   #years-names select { max-width: 16rem; }
+  #years-groups { margin: 0 0 1rem; font-size: 0.9rem; }
+  #years-groups summary { cursor: pointer; }
+  table.data tbody tr:nth-child(even) > td { background: var(--stripe); }
+  table.data tbody tr:hover > td { background: var(--accent-soft); }
+
+  /* Searchable dropdowns (static/js/combo.js), e.g. picking a person. */
+  .combo { position: relative; display: inline-block; }
+  .combo input { width: 15rem; max-width: 100%; }
+  .combo-list { position: absolute; z-index: 20; top: 100%; left: 0; min-width: 100%; width: max-content;
+                max-width: min(22rem, 90vw); margin-top: 2px; max-height: 300px; overflow-y: auto;
+                background: var(--surface); border: 1px solid var(--border-strong); border-radius: 6px;
+                padding: 0.25rem 0; box-shadow: 0 8px 24px rgb(0 0 0 / 0.18); font-size: 0.9rem; }
+  .combo-list [role=option] { padding: 0.35rem 0.75rem; cursor: pointer; }
+  .combo-list [role=option][aria-selected=true] { font-weight: 600; }
+  .combo-list [role=option].active { background: var(--button-hover); }
+  .combo-list .none { padding: 0.5rem 0.75rem; color: var(--muted); font-style: italic; }
+
+  /* Groups (couples, families): static/js/groups_ui.js. */
+  .group-editor .group-combine { margin: 0.4rem 0 0.6rem; }
+  .group-list { display: flex; flex-direction: column; gap: 0.5rem; margin-bottom: 0.6rem; }
+  .group-list .group { border: 1px solid var(--border); border-radius: 6px; padding: 0.5rem 0.6rem;
+                       background: var(--surface); }
+  .group-head { display: flex; gap: 0.4rem; align-items: center; margin-bottom: 0.4rem; }
+  .group-head input { flex: 1; min-width: 0; font-weight: 600; }
+  .group-members { display: flex; flex-wrap: wrap; gap: 0.35rem; align-items: center; }
+  .group-members .combo input { width: 11rem; }
+  .chip { display: inline-flex; align-items: center; gap: 0.2rem; background: var(--accent-soft);
+          border: 1px solid var(--border); border-radius: 999px; padding: 0.1rem 0.2rem 0.1rem 0.6rem; }
+  .chip.absent { opacity: 0.6; font-style: italic; }
+  .chip-x { border: 0; background: none; padding: 0 0.35rem; line-height: 1; font-size: 1rem; }
+  .group-new { display: flex; flex-wrap: wrap; gap: 0.4rem; align-items: center; }
+  .group-new .combo input { width: 11rem; }
+
+  /* DataTables (static/js/vendor/datatables.js): only its sort arrows are styled. */
+  table.dataTable thead th.dt-orderable-asc, table.dataTable thead th.dt-orderable-desc { cursor: pointer; }
+  table.dataTable thead th:hover { color: var(--accent); }
+  table.dataTable thead th .dt-column-order { display: inline-block; width: 0.9em; flex: none;
+                                              color: var(--muted); font-size: 0.75em; text-align: center; }
+  table.dataTable thead th.dt-orderable-asc .dt-column-order::after,
+  table.dataTable thead th.dt-orderable-desc .dt-column-order::after { content: "\2195"; opacity: 0.45; }
+  table.dataTable thead th.dt-ordering-asc .dt-column-order::after { content: "\25B2"; opacity: 1; color: var(--accent); }
+  table.dataTable thead th.dt-ordering-desc .dt-column-order::after { content: "\25BC"; opacity: 1; color: var(--accent); }
+  table.dataTable thead .dt-column-header { display: flex; align-items: center; gap: 0.15rem; }
+  table.dataTable thead th.num .dt-column-header { flex-direction: row-reverse; justify-content: flex-start; }
+  .dt-container .dt-empty { color: var(--muted); font-style: italic; text-align: center; }
 </style>
 </head>
 <body>
@@ -284,12 +332,18 @@
         <div id="years-suggest"></div>
         <div class="row">
           <label for="years-merge-from">Merge</label>
-          <select id="years-merge-from"></select>
+          <span class="combo"><input type="text" id="years-merge-from" placeholder="Search names…"></span>
           <label for="years-merge-into">into</label>
-          <select id="years-merge-into"></select>
+          <span class="combo"><input type="text" id="years-merge-into" placeholder="Search names…"></span>
           <button type="button" id="years-merge-btn">Merge</button>
         </div>
         <ul id="years-merges"></ul>
+      </details>
+      <details id="years-groups">
+        <summary id="years-groups-summary">Couples and families</summary>
+        <p class="note" style="margin-top:0.5rem">Group a couple or a family to see their parts
+          together. Kept in this browser.</p>
+        <div id="years-groups-editor"></div>
       </details>
 
       <div class="tabs" role="tablist" aria-label="Table to show">
@@ -300,7 +354,8 @@
       </div>
       <div id="years-panel" role="tabpanel">
         <div class="years-tools">
-          <select id="years-person" aria-label="Person" hidden></select>
+          <span class="combo" id="years-person-field" hidden><input type="text" id="years-person"
+            aria-label="Person" placeholder="Search people…"></span>
           <input type="search" id="years-filter" placeholder="Filter: part, description, color…" aria-label="Filter rows">
           <span class="grow"></span>
           <button type="button" id="years-csv">Download CSV</button>
@@ -382,6 +437,15 @@
         <p class="status muted" id="design-status"></p>
       </div>
 
+      <div class="panel" id="groups-panel">
+        <h3>Couples and families</h3>
+        <p class="note">Group people who get one order together: their parts are added up and
+          packed as one, under the group's name, on the labels, checklist, parts list and lot
+          counts. <span id="groups-where"></span></p>
+        <div id="groups-editor"></div>
+        <p class="status muted" id="groups-status"></p>
+      </div>
+
       <div class="panel">
         <h3><span class="step">2</span>Download</h3>
         <p class="note">Tick what you want. One file downloads as it is; several come in one .zip.
@@ -422,6 +486,8 @@ import { orderRecords } from '/static/js/ordering.js';
 import * as packing from '/static/js/packing.js';
 import * as reportOptions from '/static/js/report_options.js';
 import * as reports from '/static/js/reports.js';
+import { applyGroups } from '/static/js/groups.js';
+import { groupEditor } from '/static/js/groups_ui.js';
 import { initYears } from '/static/js/years_page.js';
 import { zip } from '/static/js/zip.js';
 
@@ -739,7 +805,7 @@ $('zip-files').addEventListener('change', () => optionsChanged($('zip-status'), 
 function currentOptions() {
   const raw = { zip: {} };
   for (const [kind, defaults] of Object.entries(reportOptions.DEFAULTS)) {
-    if (kind === 'zip') continue;
+    if (kind === 'zip' || kind === 'groups') continue;
     raw[kind] = {};
     for (const key of Object.keys(defaults)) {
       const input = optionInput(kind, key);
@@ -748,11 +814,12 @@ function currentOptions() {
     }
   }
   for (const [id] of reportOptions.ZIP_FILES) raw.zip[id] = $('zip-' + id).checked;
+  raw.groups = ws && ws.options ? ws.options.groups : null;  // edited in their own panel
   return reportOptions.normalizeOptions(raw);
 }
 function showOptions(o) {
   for (const [kind, section] of Object.entries(o)) {
-    if (kind === 'zip') continue;
+    if (kind === 'zip' || kind === 'groups') continue;
     for (const [key, value] of Object.entries(section)) {
       const input = optionInput(kind, key);
       if (!input) continue;
@@ -1166,11 +1233,71 @@ $('test-page-btn').addEventListener('click', async () => {
   }
 });
 
+// --- Couples and families ---
+// Groups are saved with the report settings (ws.options.groups). `ws.raw`
+// is the sheet as read; `ws.loaded`, what everything is made from, has each
+// group's members combined into one person (static/js/groups.js).
+const groupKey = (name) => String(name).trim().replace(/\s+/g, ' ').toLowerCase();
+function withGroups(raw) {
+  if (!raw || !ws || !ws.options) return raw;
+  const records = applyGroups(raw.records, ws.options.groups);
+  return records === raw.records ? raw : Object.assign({}, raw, { records });
+}
+const groupsUi = groupEditor($('groups-editor'), {
+  people: () => {
+    if (!ws || !ws.raw) return [];
+    return [...new Set(ws.raw.records.map(r => r.person))].sort((a, b) => a.localeCompare(b));
+  },
+  get: () => (ws && ws.options ? ws.options.groups : { combine: true, list: [] }),
+  set: (groups) => {
+    if (!ws) return;
+    ws.options.groups = groups;
+    ws.loaded = withGroups(ws.raw);
+    refreshKeep();
+    optionsChanged($('groups-status'), false);
+    if (ws.raw) showSummary();
+  },
+  combineLabel: 'Pack each group as one person',
+  onFull: () => setText($('groups-status'), 'That’s as many groups as can be saved with the sheet.', true),
+});
+
 // --- Check (summary + issues) ---
 // The sheet is read and checked here in the browser (static/js/load.js):
 // an uploaded file is parsed on this page, a saved sheet's cells come from
 // GET /sheets/<id>/values. What was read stays in `ws.loaded`
 // ({records, issues, summary}) for the page to use.
+// The summary line and issues of what was read (ws.raw), and how many
+// groups were packed together (ws.loaded).
+function showSummary() {
+  const summary = $('ws-summary');
+  const box = $('ws-issues-box');
+  const loaded = ws.raw;
+  const data = loaded.summary;
+  const plural = (n, word) => n + ' ' + word + (n === 1 ? '' : 's');
+  summary.textContent = plural(data.labels, 'label') + ' · ' + plural(data.people, 'person').replace('persons', 'people') +
+    ' · ' + plural(data.parts, 'part');
+  summary.classList.remove('error');
+  box.hidden = true;
+  if (data.issues.length) {
+    summary.appendChild(el('span', { class: 'warn', text: ' · ' + plural(data.issues.length, 'issue') }));
+    $('ws-issues-summary').textContent = plural(data.issues.length, 'possible problem') + ' on the sheet — show';
+    const list = $('ws-issues');
+    list.textContent = '';
+    for (const issue of data.issues) list.appendChild(el('li', { text: 'Row ' + issue.row + ': ' + issue.detail }));
+    box.hidden = false;
+  }
+  if (ws.loaded !== loaded) {
+    const here = new Set(loaded.records.map(r => groupKey(r.person)));
+    const n = ws.options.groups.list.filter(g => g.members.some(m => here.has(groupKey(m)))).length;
+    summary.appendChild(el('span', { text: ' · ' + plural(n, 'group') + ' packed together (' +
+                                           plural(ws.loaded.records.length, 'label') + ')' }));
+  }
+  if (loaded.lookupError) {
+    summary.appendChild(el('span', { class: 'muted',
+      text: ' · no BrickLink data this time (' + loaded.lookupError + ')' }));
+  }
+}
+
 async function runCheck() {
   const summary = $('ws-summary');
   const box = $('ws-issues-box');
@@ -1180,29 +1307,17 @@ async function runCheck() {
   try {
     const loaded = await loadSheet(ws.kind === 'sheet' ? { rowId: ws.sheet.row_id } : ws.file, { fetch: api });
     if (ws !== opened) return false;
-    ws.loaded = loaded;
+    ws.raw = loaded;
+    ws.loaded = withGroups(loaded);
+    groupsUi.render();
     refreshKeep();
+    showSummary();
     const data = loaded.summary;
-    const plural = (n, word) => n + ' ' + word + (n === 1 ? '' : 's');
-    summary.textContent = plural(data.labels, 'label') + ' · ' + plural(data.people, 'person').replace('persons', 'people') +
-      ' · ' + plural(data.parts, 'part');
-    summary.classList.remove('error');
-    if (data.issues.length) {
-      summary.appendChild(el('span', { class: 'warn', text: ' · ' + plural(data.issues.length, 'issue') }));
-      $('ws-issues-summary').textContent = plural(data.issues.length, 'possible problem') + ' on the sheet — show';
-      const list = $('ws-issues');
-      list.textContent = '';
-      for (const issue of data.issues) list.appendChild(el('li', { text: 'Row ' + issue.row + ': ' + issue.detail }));
-      box.hidden = false;
-    }
-    if (loaded.lookupError) {
-      summary.appendChild(el('span', { class: 'muted',
-        text: ' · no BrickLink data this time (' + loaded.lookupError + ')' }));
-    }
     return data.labels > 0;
   } catch (e) {
     if (ws === opened) {
       ws.loaded = null;
+      ws.raw = null;
       setText(summary, (e && e.message) || 'Could not read the sheet — try again.', true);
     }
     return false;
@@ -1229,6 +1344,10 @@ async function openWorkspace(source) {
     setText($('opt-status-' + kind), '');
   }
   setText($('design-status'), '');
+  setText($('groups-status'), '');
+  $('groups-where').textContent = ws.kind === 'sheet'
+    ? 'Saved with the sheet, like the label design.' : 'Remembered in this browser for your uploads.';
+  ws.raw = null;
   setText($('dl-status'), '');
   setText($('zip-status'), '');
   setText($('preview-status'), '');
@@ -1247,6 +1366,7 @@ async function openWorkspace(source) {
   }
   if (ws !== source) return;  // another sheet was opened meanwhile
   source.options = options;
+  groupsUi.render();
   showDesign(design);
   showOptions(options);
   const panel = $('workspace');

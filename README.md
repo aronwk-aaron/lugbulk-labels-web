@@ -107,7 +107,15 @@ can still open sheets already in their list.
   spacing ignored) with manual merges for other spellings, and parts by
   element ID. The price is the sheet's `Price` / `Cost Each` column (not
   `BL Price` or `B&P Price`); rows without an element ID, like fees and
-  shipping, don't count. All in the browser, nothing stored.
+  shipping, don't count. All in the browser, nothing stored. The tables
+  sort and filter in the browser (DataTables); people are picked from
+  searchable lists. Couples and families can be grouped here too, and the
+  viewer chooses whether a group shows as one person or as its members.
+- **Couples and families** — group people who get one order together
+  (a couple, a family): with "Pack each group as one person" on, their
+  parts are added up per part and packed under the group's name on the
+  labels, packing checklist, parts list and lot counts. Saved with the
+  sheet's report settings (or in this browser for uploads).
 - **Check sheet** — label count and any data issues (non-numeric
   quantities, duplicates, bad element IDs, colors with no LEGO/BrickLink
   match, missing descriptions) without generating anything.
@@ -383,8 +391,9 @@ or with the compose file: `LUGBULK_TAG=canary docker compose pull && docker comp
 | `src/spreadsheet.{h,cpp}` | Reads `.xlsx` (bounded unzip + SpreadsheetML) and `.csv` — no longer used by a route; kept as the reference `static/js/spreadsheet.js` is tested against |
 | `src/records.{h,cpp}` | Row cap, per-run size limits, BrickLink data on records, the "Check sheet" JSON |
 | `static/js/` | Browser ports of the pure data logic (plain ES modules, served at `/static/js/<name>.js`): `pivot.js`, `ordering.js`, `colors.js`, `layout.js`, `records.js`, `spreadsheet.js`, `load.js`, and the reports (`reports.js`, `report_options.js`, `printf.js`) and zip writer (`zip.js`) |
+| `static/js/groups.js`, `groups_ui.js`, `combo.js` | Couples and families: groups saved with the report options and applied to the records before anything is made, their editor, and the searchable person dropdown it and Compare years use; `tests/js/groups.test.mjs` |
 | `static/js/years.js`, `years_page.js` | "Compare years": several sheets combined (people by name plus merges, parts by element ID, prices from the sheet's price column) and its tables and CSVs; the dashboard section that shows them; `tests/js/years.test.mjs` |
-| `static/js/vendor/` | Third-party browser modules, pinned and unmodified: `pdf-lib.js` (see its README) |
+| `static/js/vendor/` | Third-party browser modules, pinned and unmodified: `pdf-lib.js`, `qrcodegen.js`, `datatables.js` (see its README) |
 | `tests/tests.cpp` | Unit tests (`ctest`) |
 | `tests/golden.cpp` | `lugbulk_golden <dir>`: writes what the C++ makes of each fixture, for the JS parity test |
 | `tests/js/` | `node --test` tests for `static/js/`; `GOLDEN_DIR=<dir>` checks it matches the C++ (CI does this); `tests/js/golden/` holds the checked-in fixtures |

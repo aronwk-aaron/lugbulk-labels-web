@@ -9,6 +9,8 @@
 // what it allows and fills in the defaults. The defaults give the same
 // reports the server makes.
 
+import { normalizeGroups } from './groups.js';
+
 // Longest custom title / subtitle, in characters. Keeps the saved JSON well
 // under the server's 4 KB limit (MAX_OPTIONS_BYTES) even in the worst case.
 export const MAX_TITLE = 80;
@@ -73,6 +75,8 @@ export const DEFAULTS = Object.freeze({
     min_lots: 0,
   }),
   zip: Object.freeze(Object.fromEntries(ZIP_FILES.map(([id]) => [id, true]))),
+  // Couples and families packed as one (groups.js).
+  groups: Object.freeze({ combine: true, list: Object.freeze([]) }),
 });
 
 const CHOICES = {
@@ -129,8 +133,18 @@ function normalizeSection(name, raw) {
 export function normalizeOptions(raw) {
   const src = isObject(raw) ? raw : {};
   const out = {};
-  for (const name of Object.keys(DEFAULTS)) out[name] = normalizeSection(name, src[name]);
+  for (const name of Object.keys(DEFAULTS)) {
+    out[name] = name === 'groups' ? normalizeGroups(src.groups) : normalizeSection(name, src[name]);
+  }
+  // Groups are the one open-ended part: the last ones are dropped if the
+  // whole wouldn't fit the server's limit.
+  while (out.groups.list.length && optionsBytes(out) > MAX_OPTIONS_BYTES) out.groups.list.pop();
   return out;
+}
+
+// The size of the options as saved (UTF-8 JSON), in bytes.
+export function optionsBytes(options) {
+  return new TextEncoder().encode(JSON.stringify(options)).length;
 }
 
 // normalizeOptions() of a JSON string; bad JSON gives the defaults.
