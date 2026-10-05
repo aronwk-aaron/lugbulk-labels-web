@@ -152,6 +152,22 @@ export function computeLayout(width, height, show, nLines) {
   const topRow = show.element_id || show.qty;
   const nameRow = show.name || show.count;
   L.y_id = height - L.pad - L.id_size * 0.8;
+  // Squarish labels (at least 0.65 as tall as wide, and 60 mm wide) can stack: the photo under
+  // the top row and the text under the photo, across the whole width.
+  // Beside the photo, as on wide labels, the text column would be narrow.
+  // Only when the photo stays about as big as it is beside the text (and is
+  // shown at all: without it the text has the whole width anyway).
+  if (height >= width * STACK_RATIO && width >= STACK_MIN_WIDTH) {
+    // Decided on the lines the switches allow, not this label's, so every
+    // label on a sheet has the same layout.
+    const most = (show.lego_color ? 1 : 0) + (show.bl_color ? 1 : 0) + (show.price || show.lot_price ? 1 : 0) +
+      (show.description ? 1 : 0);
+    const probe = stackedLayout({ ...L }, width, height, show, Math.max(most, nLines), topRow, nameRow, inner);
+    if (show.photo && probe.img >= Math.min(inner, width * 0.32) * STACK_MIN_PHOTO) {
+      return stackedLayout(L, width, height, show, nLines, topRow, nameRow, inner);
+    }
+  }
+  L.stacked = false;
   // The text lines (colors, price, description) between the top row and
   // the name: L.line is their size, L.small unless that many lines don't
   // fit above the name, when they shrink (to 55% at most) rather than run
@@ -177,6 +193,56 @@ export function computeLayout(width, height, show, nLines) {
   L.qr = show.qr ? Math.min(artHeight * 0.85, width * 0.17) : 0;
   L.text_x = L.img > 0 ? L.pad + L.img + L.pad * 0.8 : L.pad;
   L.text_right = width - L.pad - (L.qr > 0 ? L.qr + L.pad * 0.8 : 0);
+  L.img_x = L.pad;
+  L.img_y = height - L.pad - L.img;
+  L.qr_x = width - L.pad - L.qr;
+  L.qr_y = height - L.pad - L.qr;
+  return L;
+}
+
+const STACK_RATIO = 0.65;
+const STACK_MIN_WIDTH = 60 * MM_TO_PT; // narrower, stacking leaves everything too small
+// Stacked, the photo must stay this share of the size it gets beside the
+// text: the text then gains the whole width without the photo shrinking.
+const STACK_MIN_PHOTO = 0.85;
+
+// computeLayout for a squarish label: the top row, then the photo (and
+// the QR code to its right), then the text lines across the whole width,
+// then the name. The photo gets what the text doesn't need, up to half the
+// width; the text shrinks (to 55% at most) before the photo is squeezed
+// under 40% of the label's height.
+function stackedLayout(L, width, height, show, nLines, topRow, nameRow, inner) {
+  L.stacked = true;
+  const top = topRow ? L.y_id - L.id_size * 0.4 : height - L.pad;
+  const floor = nameRow ? L.pad + L.name_size * 0.22 + L.name_size * 0.75 + L.small * 0.15 : L.pad;
+  const gap = L.pad * 0.6;
+  const textH = (s) => (nLines ? (nLines - 1) * s * 1.2 + s * (0.85 + DESCENDER) : 0);
+  const room = (s) => top - floor - textH(s) - (nLines ? gap : 0);
+  const art = show.photo || show.qr;
+  L.line = L.small;
+  while (nLines > 0 && L.line > L.small * 0.55 && (art ? room(L.line) < inner * 0.4 : room(L.line) < 0)) {
+    L.line *= 0.95;
+  }
+  const artSize = art ? Math.max(0, Math.min(room(L.line), width * 0.5)) : 0;
+  L.img = show.photo ? artSize : 0;
+  L.qr = show.qr ? Math.min(artSize * 0.85, width * 0.3) : 0;
+  // The photo centred, or at the left with the QR code at the right.
+  L.img_x = L.qr > 0 ? L.pad : (width - L.img) / 2;
+  L.img_y = top - L.img;
+  L.qr_x = width - L.pad - L.qr;
+  L.qr_y = top - L.qr;
+  const artH = Math.max(L.img, L.qr);
+  const first = top - artH - (artH > 0 ? gap : 0) - L.line * 0.85;
+  L.lines = [];
+  for (let i = 0; i < nLines; ++i) L.lines.push(first - i * L.line * 1.2);
+  const lastText = L.lines.length ? L.lines[L.lines.length - 1] : top - artH;
+  L.y_name = L.pad + L.name_size * 0.22;
+  if (nameRow) {
+    const slack = lastText - L.small * 0.3 - (L.y_name + L.name_size * 0.75);
+    L.y_name += Math.max(0, slack) * 0.45;
+  }
+  L.text_x = L.pad;
+  L.text_right = width - L.pad;
   return L;
 }
 
@@ -200,10 +266,8 @@ export function layoutLabel(record, width, height, show, measure) {
   const out = { image: null, qr: null, swatch: null, texts: [] };
   const draw = (font, size, x, y, text) => out.texts.push({ font, size, x, y, text });
 
-  if (L.img > 0) out.image = { x: L.pad, y: height - L.pad - L.img, size: L.img };
-  if (L.qr > 0) {
-    out.qr = { x: width - L.pad - L.qr, y: height - L.pad - L.qr, size: L.qr, url: bricklinkUrl(record.element_id) };
-  }
+  if (L.img > 0) out.image = { x: L.img_x, y: L.img_y, size: L.img };
+  if (L.qr > 0) out.qr = { x: L.qr_x, y: L.qr_y, size: L.qr, url: bricklinkUrl(record.element_id) };
 
   const textX = L.text_x;
   const right = L.text_right;
