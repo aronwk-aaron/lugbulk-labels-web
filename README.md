@@ -109,7 +109,8 @@ can still open sheets already in their list.
   `BL Price` or `B&P Price`); rows without an element ID, like fees and
   shipping, don't count. All in the browser, nothing stored. The tables
   sort and filter in the browser (DataTables); people are picked from
-  searchable lists. Families can be set up here too, and the viewer
+  searchable lists; the price tables can be narrowed to one person or
+  family. Families can be set up here too, and the viewer
   chooses whether a family shows as one person or as its members.
 - **Prices on labels** — two label switches, off by default: **Price each**
   (from the sheet's `Price` / `Cost Each` column, with the sheet's currency

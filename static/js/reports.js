@@ -147,9 +147,12 @@ export function pricing(options, records) {
   return { each: o.price && priced, lot: o.lot_price && priced, sign, priceOf };
 }
 
-// An amount in whole cents, with the sheet's currency sign: "$12.50".
-export function centsText(x, sign = '') {
-  return `${x < 0 ? '-' : ''}${sign}${(Math.round(Math.abs(x) * 100) / 100).toFixed(2)}`;
+// An amount in whole cents, with the sheet's currency sign and thousands
+// separators: "$3,828.00" ("3828.00" with `plain`, for CSVs).
+export function centsText(x, sign = '', plain = false) {
+  const cents = (Math.round(Math.abs(x) * 100) / 100).toFixed(2);
+  const text = plain ? cents : cents.replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+  return `${x < 0 ? '-' : ''}${sign}${text}`;
 }
 
 // What a record's lot costs (qty x price), or null without a price.
@@ -208,7 +211,7 @@ export function lotCountsCsv(records, sortBy = 'last', minLots = 0, prices = nul
   for (const t of lotCountsByPerson(records, sortBy)) {
     if (t.lot_count < minLots) continue;
     out += `${csvField(t.person)},${t.lot_count},${formatCount(t.total_pieces)}`;
-    if (money) out += `,${centsText(t.cost)}`;
+    if (money) out += `,${centsText(t.cost, '', true)}`;
     out += '\r\n';
   }
   return out;
@@ -228,7 +231,7 @@ export function partsCsv(parts, prices = null) {
       `${csvField(p.bl_color)},${formatCount(p.pieces)},${p.lots},${grams},${p.weight_source}`;
     const price = prices ? prices.priceOf.get(p.element_id) : undefined;
     if (each) out += `,${price === undefined ? '' : formatMoney(price)}`;
-    if (lot) out += `,${price === undefined ? '' : centsText(price * p.pieces)}`;
+    if (lot) out += `,${price === undefined ? '' : centsText(price * p.pieces, '', true)}`;
     out += '\r\n';
   });
   return out;

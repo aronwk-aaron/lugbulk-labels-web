@@ -22,7 +22,7 @@ import { PDFDocument, StandardFonts, rgb } from './vendor/pdf-lib.js';
 import qrcodegen from './vendor/qrcodegen.js';
 import { isLight, isTransparent, swatchRgb } from './colors.js';
 import { helveticaMeasure } from './afm.js';
-import { formatMoney, winAnsi } from './reports.js';
+import { centsText, formatMoney, winAnsi } from './reports.js';
 
 export { helveticaMeasure };
 
@@ -62,7 +62,7 @@ export function priceLine(record, show) {
   if (show.price) parts.push(`${sign}${formatMoney(record.price)} each`);
   if (show.lot_price) {
     const lot = Number(record.qty.replaceAll(',', '')) * record.price;
-    if (Number.isFinite(lot)) parts.push(`Lot ${sign}${(Math.round(lot * 100) / 100).toFixed(2)}`);
+    if (Number.isFinite(lot)) parts.push(`Lot ${centsText(lot, sign)}`);
   }
   return parts.join(' \u00b7 ');
 }
@@ -79,33 +79,41 @@ const CAP_HEIGHT = 0.72;
 const DESCENDER = 0.22;
 const LEADING = 1.1;
 
-// wrap_lines: at spaces; a word wider than a whole line is split between
-// characters as a last resort. Always at least one line.
+// wrap_lines: at spaces; a word too wide for a line of its own is broken
+// after a hyphen inside it ("Montgomery-" / "Smith"), and a piece still
+// too wide is split between characters as a last resort. Always at least
+// one line.
 export function wrapLines(text, maxWidth, width) {
   const lines = [];
   let line = '';
-  for (let word of text.split(' ')) {
-    const candidate = line === '' ? word : `${line} ${word}`;
+  const place = (piece, glue) => {
+    const candidate = line === '' ? piece : `${line}${glue}${piece}`;
     if (width(candidate) <= maxWidth) {
       line = candidate;
-      continue;
+      return;
     }
     if (line !== '') {
       lines.push(line);
       line = '';
-      if (width(word) <= maxWidth) {
-        line = word;
-        continue;
+      if (width(piece) <= maxWidth) {
+        line = piece;
+        return;
       }
     }
-    while (word !== '') {
+    let rest = piece;
+    while (rest !== '') {
       let n = 1;
-      while (n < word.length && width(word.slice(0, n + 1)) <= maxWidth) ++n;
-      if (n === word.length) break;
-      lines.push(word.slice(0, n));
-      word = word.slice(n);
+      while (n < rest.length && width(rest.slice(0, n + 1)) <= maxWidth) ++n;
+      if (n === rest.length) break;
+      lines.push(rest.slice(0, n));
+      rest = rest.slice(n);
     }
-    line = word;
+    line = rest;
+  };
+  for (const word of text.split(' ')) {
+    const fitsAlone = width(word) <= maxWidth;
+    if (fitsAlone || !word.includes('-')) place(word, ' ');
+    else word.split(/(?<=-)(?=.)/).forEach((piece, k) => place(piece, k === 0 ? ' ' : ''));
   }
   if (line !== '' || lines.length === 0) lines.push(line);
   return lines;
@@ -113,13 +121,18 @@ export function wrapLines(text, maxWidth, width) {
 
 // fitText: one line shrunk from maxSize down to minSize in
 // half-point steps when that fits; otherwise wrapped, shrinking further
-// until the lines fit maxHeight. Nothing is ever cut off.
+// until the lines fit maxHeight. Before any word would be split between
+// letters, it shrinks (to 60% of minSize at most) until the longest word,
+// or its hyphenated pieces, fit a line. Nothing is ever cut off.
 // Returns {lines, size, leading}.
 export function fitText(text, maxSize, minSize, maxWidth, maxHeight, width) {
   let size = maxSize;
   while (size > minSize && width(text, size) > maxWidth) size -= 0.5;
   if (width(text, size) <= maxWidth) return { lines: [text], size, leading: size * LEADING };
   size = minSize;
+  const pieces = text.split(/[ ]|(?<=-)(?=.)/).filter(Boolean);
+  const widest = (s) => Math.max(...pieces.map((p) => width(p, s)));
+  while (size > minSize * 0.6 && widest(size) > maxWidth) size -= 0.25;
   for (;;) {
     const lines = wrapLines(text, maxWidth, (t) => width(t, size));
     const height = size * (CAP_HEIGHT + DESCENDER) + (lines.length - 1) * size * LEADING;
@@ -252,13 +265,25 @@ export function layoutLabel(record, width, height, show, measure) {
   }
 
   if (show.name) {
-    // Centered on the label, clear of the counter on both sides.
-    const nameMax = width - 2 * L.pad - 2 * (counterW + L.pad);
+    // Centered on the label, clear of the counter on both sides; when it
+    // doesn't fit that way at full size, centered in all the room left of
+    // the counter instead, if that gives it a bigger size or fewer lines.
     const top = L.y_name + L.name_size * CAP_HEIGHT;
-    const fit = fitText(winAnsi(record.person), L.name_size, L.name_size * 0.55, nameMax, top - L.pad * 0.5, bold);
+    const name = winAnsi(record.person);
+    const fitIn = (w) => fitText(name, L.name_size, L.name_size * 0.55, w, top - L.pad * 0.5, bold);
+    let fit = fitIn(width - 2 * L.pad - 2 * (counterW + L.pad));
+    let center = width / 2;
+    if (counterW > 0 && (fit.lines.length > 1 || fit.size < L.name_size)) {
+      const room = width - 2 * L.pad - counterW - L.pad;
+      const wide = fitIn(room);
+      if (wide.lines.length < fit.lines.length || wide.size > fit.size) {
+        fit = wide;
+        center = L.pad + room / 2;
+      }
+    }
     let baseline = fit.lines.length === 1 ? L.y_name : top - fit.size * CAP_HEIGHT;
     for (const line of fit.lines) {
-      draw('bold', fit.size, (width - bold(line, fit.size)) / 2, baseline, line);
+      draw('bold', fit.size, center - bold(line, fit.size) / 2, baseline, line);
       baseline -= fit.leading;
     }
   }

@@ -302,10 +302,12 @@ export function initYears({ api, saveBlob }) {
       },
     },
     prices: {
-      note: () => 'The price paid per piece each year, and how many were bought at it (everyone together).',
-      csv: () => [years.pricesByYearCsv(data), 'prices by year.csv'],
+      note: () => (who
+        ? `The price paid per piece each year, and how many ${who} bought at it.`
+        : 'The price paid per piece each year, and how many were bought at it (everyone together).'),
+      csv: () => [years.pricesByYearCsv(scoped()), `prices by year${who ? ` - ${who}` : ''}.csv`],
       render() {
-        const rows = years.pricesByYear(data).map((r) => el('tr', {}, [
+        const rows = years.pricesByYear(scoped()).map((r) => el('tr', {}, [
           ...partCells(r), num(String(r.year), r.year), num(r.price === null ? '—' : money(r.price), r.price),
           num(formatCount(r.qty), r.qty), num(String(r.people), r.people)]));
         return table([th('Element ID'), th('Description'), th('Color'), th('Year', true), th('Price', true),
@@ -313,11 +315,12 @@ export function initYears({ api, saveBlob }) {
       },
     },
     average: {
-      note: () => 'One row per part. The average is of the yearly prices: each year counts once, however many were bought.',
-      csv: () => [years.averagePricesCsv(data), 'average prices.csv'],
+      note: () => `One row per part${who ? ` ${who} bought` : ''}. The average is of the yearly prices: each year ` +
+        'counts once, however many were bought.',
+      csv: () => [years.averagePricesCsv(scoped()), `average prices${who ? ` - ${who}` : ''}.csv`],
       render() {
         const ys = data.years;
-        const rows = years.averagePrices(data).map((r) => el('tr', {}, [
+        const rows = years.averagePrices(scoped()).map((r) => el('tr', {}, [
           ...partCells(r), ...ys.map((y) => num(money(r.prices[y]), r.prices[y])),
           num(r.average === null ? '—' : money(r.average), r.average), num(money(r.low), r.low),
           num(money(r.high), r.high), num(formatCount(r.qty), r.qty)]));
@@ -348,6 +351,16 @@ export function initYears({ api, saveBlob }) {
     t.addEventListener('click', () => showView(t.dataset.view));
   }
 
+  // The price tables' filter: everyone, or one person or family. `scoped()`
+  // is the data with only their entries.
+  const EVERYONE = 'Everyone';
+  let who = '';
+  const scoped = () => (who ? { ...data, entries: data.entries.filter((e) => e.person === who) } : data);
+  const whoPick = combo($('years-who'), {
+    items: () => [EVERYONE, ...(data ? data.people.map((p) => p.name) : [])],
+    onPick: (name) => { who = name === EVERYONE ? '' : name; renderView(); },
+  });
+
   // The person picker: a searchable list of everyone (groups included).
   const personPick = combo($('years-person'), {
     items: () => (data ? data.people.map((p) => p.name) : []),
@@ -359,6 +372,9 @@ export function initYears({ api, saveBlob }) {
   let table_ = null;
   function renderView() {
     $('years-person-field').hidden = view !== 'person';
+    $('years-who-field').hidden = view !== 'prices' && view !== 'average';
+    if (who && !data.people.some((p) => p.name === who)) who = '';
+    whoPick.set(who || EVERYONE);
     $('years-csv-all').hidden = view !== 'person';
     if (view === 'person') {
       if (!data.people.some((p) => p.name === person)) person = data.people[0]?.name ?? '';
