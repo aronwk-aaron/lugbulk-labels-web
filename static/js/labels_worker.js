@@ -39,9 +39,9 @@ self.onmessage = async (event) => {
     if (cmd === 'test_page') {
       pdf = await buildTestPage(event.data.spec);
     } else if (cmd === 'labels') {
-      const { records, spec, hidden, maxPages, images } = event.data;
+      const { records, spec, hidden, prices, maxPages, images } = event.data;
       pdf = await buildLabelsPdf(records, spec, {
-        show: optionsFromHidden(hidden),
+        show: { ...optionsFromHidden(hidden), price: !!prices?.price, lot_price: !!prices?.lot_price },
         images,
         maxPages,
         prepareImage,

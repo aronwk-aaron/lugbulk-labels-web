@@ -6,7 +6,7 @@
 // is the caller's job.
 
 import * as colors from './colors.js';
-import { pivotSheet } from './pivot.js';
+import { pivotSheet, unitPrices } from './pivot.js';
 
 export const MAX_SHEET_ROWS = 3000; // rows read from the "Order Here" tab
 export const MAX_LABELS = 20000; // labels in one run
@@ -51,15 +51,31 @@ export function pivotRows(rows) {
 
 // Pivots an uploaded file's tabs, like the server's pivot_upload: each tab
 // in turn until one has orders (a workbook's "Order Here" tab comes first;
-// a CSV is one tab). Throws TooBigError.
+// a CSV is one tab). Throws TooBigError. The result's `rows` are the tab's
+// rows it used (for addPrices).
 export function pivotTabs(tabs) {
   let pivot = { records: [], issues: [] };
+  let used = [];
   for (const rows of tabs) {
-    pivot = pivotSheet(capRows(rows));
+    used = capRows(rows);
+    pivot = pivotSheet(used);
     if (pivot.records.length) break;
   }
   checkRunSize(pivot);
-  return pivot;
+  return { ...pivot, rows: used };
+}
+
+// Each record's price per piece from the sheet's price column (null where
+// it has none) and the currency sign the sheet writes prices with:
+// {records, issues} with `price` and `currency` on every record.
+export function addPrices(pivot, rows) {
+  const { prices, symbol } = unitPrices(rows);
+  const records = pivot.records.map((r) => ({
+    ...r,
+    price: prices.has(r.element_id) ? prices.get(r.element_id) : null,
+    currency: symbol,
+  }));
+  return { records, issues: pivot.issues };
 }
 
 // Adds BrickLink data from a POST /bricklink/lookup response

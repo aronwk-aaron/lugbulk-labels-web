@@ -14,7 +14,9 @@
 import { groupOf, personKey } from './groups.js';
 import { parseQty, pivotSheet, unitPrices } from './pivot.js';
 import { capRows } from './records.js';
-import { csvField, formatCount, personSortKey } from './reports.js';
+import { csvField, formatCount, formatMoney, personSortKey } from './reports.js';
+
+export { formatMoney };
 import { compareBytes, trim } from './text.js';
 
 // The first plausible year (1990-2099) in a file or sheet name, else null.
@@ -288,14 +290,6 @@ export function averagePrices(data) {
 }
 
 // ---- text ------------------------------------------------------------------
-
-// A price or amount: at least 2 decimals, up to 4 ("0.0696", "12.50").
-export function formatMoney(x) {
-  if (x === null || x === undefined) return '';
-  let s = money(x).toFixed(4);
-  while (s.endsWith('0') && s.length - s.indexOf('.') > 3) s = s.slice(0, -1);
-  return s;
-}
 
 const csvRow = (fields) => fields.map((f) => csvField(f ?? '')).join(',') + '\r\n';
 

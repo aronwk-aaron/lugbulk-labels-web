@@ -111,6 +111,11 @@ can still open sheets already in their list.
   sort and filter in the browser (DataTables); people are picked from
   searchable lists. Couples and families can be grouped here too, and the
   viewer chooses whether a group shows as one person or as its members.
+- **Prices on labels** — two label switches, off by default: **Price each**
+  (from the sheet's `Price` / `Cost Each` column, with the sheet's currency
+  sign) and **Lot price** (that label's quantity times it), printed as
+  "$0.10 each · Lot $2.00". Saved with the report settings rather than the
+  label design's hide list, so designs saved earlier don't start showing them.
 - **Couples and families** — group people who get one order together
   (a couple, a family): with "Pack each group as one person" on, their
   parts are added up per part and packed under the group's name on the

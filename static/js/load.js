@@ -103,6 +103,8 @@ export async function loadSheet(source, options = {}) {
     throw e;
   }
 
+  pivot = records.addPrices(pivot, pivot.rows);
+
   let lookupError = null;
   const ids = records.elementIds(pivot);
   if (ids.length) {
