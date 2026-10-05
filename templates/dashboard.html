@@ -191,6 +191,29 @@
   .field-row { display: grid; grid-template-columns: 1fr 1fr; gap: 0 0.75rem; }
   #zip-files { grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); }
   .panel .switches { margin-bottom: 0.6rem; }
+
+  /* Compare years: several sheets, then tables across them. */
+  #years > details > summary { cursor: pointer; }
+  #years > details > summary h2 { display: inline; }
+  #years > details[open] > summary { margin-bottom: 0.6rem; }
+  .table-wrap { overflow: auto; max-height: 70vh; border: 1px solid var(--border); border-radius: 6px;
+                background: var(--surface); }
+  table.data { border-collapse: collapse; width: 100%; font-size: 0.88rem; }
+  table.data th, table.data td { padding: 0.3rem 0.55rem; border-bottom: 1px solid var(--border);
+                                 text-align: left; white-space: nowrap; }
+  table.data th { position: sticky; top: 0; background: var(--inset); font-weight: 600; z-index: 1; }
+  table.data td.num, table.data th.num { text-align: right; font-variant-numeric: tabular-nums; }
+  table.data td.wrap { white-space: normal; min-width: 12rem; }
+  table.data tfoot td { font-weight: 600; background: var(--inset); }
+  #years-list { margin: 0.6rem 0; }
+  #years-list input { width: 5.5rem; }
+  #years-list input.missing { border-color: var(--error); }
+  .years-tools { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center; margin: 0 0 0.6rem; }
+  .years-tools .grow { flex: 1; }
+  #years-names { margin: 0.6rem 0 1rem; font-size: 0.9rem; }
+  #years-names summary { cursor: pointer; }
+  #years-names .row { display: flex; flex-wrap: wrap; gap: 0.4rem; align-items: center; margin: 0.4rem 0; }
+  #years-names select { max-width: 16rem; }
 </style>
 </head>
 <body>
@@ -236,6 +259,59 @@
 </section>
 {{/signed_in}}
 </div>
+
+<section id="years">
+  <details id="years-box">
+    <summary><h2>Compare years</h2> <span class="muted">— what each person got and what parts cost, across several years' sheets</span></summary>
+    <p class="note">Add one order sheet per year. The year comes from the file or sheet name
+      (“LUGBULK 2025.xlsx”); fill it in where there isn't one. Sheets are read here in your
+      browser and never stored. Prices come from the sheet's price column (“Price” or
+      “Cost Each”); fees and shipping aren't counted.</p>
+    <div class="upload-drop" id="years-drop">
+      <label class="button primary" for="years-file">Add sheets…</label>
+      <input type="file" id="years-file" multiple accept=".xlsx,.csv,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" hidden>
+      {{#signed_in}}<select id="years-saved" aria-label="Add a saved Google Sheet"><option value="">Add a saved Google Sheet…</option></select>{{/signed_in}}
+      <span class="muted">or drop files here</span>
+    </div>
+    <p id="years-status" class="status muted"></p>
+    <div class="table-wrap" id="years-list" hidden></div>
+
+    <div id="years-view" hidden>
+      <details id="years-names">
+        <summary id="years-names-summary">Names</summary>
+        <p class="note" style="margin-top:0.5rem">People are matched across years by name,
+          ignoring capitals and spacing. If someone's name was spelled differently, merge them.</p>
+        <div id="years-suggest"></div>
+        <div class="row">
+          <label for="years-merge-from">Merge</label>
+          <select id="years-merge-from"></select>
+          <label for="years-merge-into">into</label>
+          <select id="years-merge-into"></select>
+          <button type="button" id="years-merge-btn">Merge</button>
+        </div>
+        <ul id="years-merges"></ul>
+      </details>
+
+      <div class="tabs" role="tablist" aria-label="Table to show">
+        <button type="button" role="tab" data-view="people" aria-controls="years-panel">People</button>
+        <button type="button" role="tab" data-view="person" aria-controls="years-panel">One person's parts</button>
+        <button type="button" role="tab" data-view="prices" aria-controls="years-panel">Prices by year</button>
+        <button type="button" role="tab" data-view="average" aria-controls="years-panel">Average prices</button>
+      </div>
+      <div id="years-panel" role="tabpanel">
+        <div class="years-tools">
+          <select id="years-person" aria-label="Person" hidden></select>
+          <input type="search" id="years-filter" placeholder="Filter: part, description, color…" aria-label="Filter rows">
+          <span class="grow"></span>
+          <button type="button" id="years-csv">Download CSV</button>
+          <button type="button" id="years-csv-all" hidden>Download everyone's parts (CSV)</button>
+        </div>
+        <p class="note" id="years-view-note"></p>
+        <div class="table-wrap" id="years-table"></div>
+      </div>
+    </div>
+  </details>
+</section>
 
 <section id="workspace" hidden>
   <div class="ws-head">
@@ -346,6 +422,7 @@ import { orderRecords } from '/static/js/ordering.js';
 import * as packing from '/static/js/packing.js';
 import * as reportOptions from '/static/js/report_options.js';
 import * as reports from '/static/js/reports.js';
+import { initYears } from '/static/js/years_page.js';
 import { zip } from '/static/js/zip.js';
 
 function el(tag, props, children) {
@@ -1347,6 +1424,7 @@ async function loadSavedSheets() {
   try {
     const res = await api('/sheets');
     const data = await res.json();
+    yearsUi.setSavedSheets(data.sheets);
     if (!data.sheets.length) {
       list.appendChild(el('li', { class: 'empty', text: PICKER ? 'No sheets saved yet — pick one below.'
                                                                 : 'No sheets saved yet.' }));
@@ -1454,6 +1532,9 @@ async function onPicked(data) {
     setText(status, (e && e.message) || 'Could not add the sheet — try again.', true);
   }
 }
+
+// --- Compare years ---
+const yearsUi = initYears({ api, saveBlob });
 
 // The Picker and saved sheets only exist for signed-in users.
 if (SIGNED_IN) {

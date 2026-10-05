@@ -97,6 +97,17 @@ can still open sheets already in their list.
   grouped by color if you like.
 - **Lot counts** (PDF/CSV) — per person: number of labels and pieces;
   optional total weight, a totals row and a minimum number of lots.
+- **Compare years** — add several years' order sheets (uploads, or saved
+  Google Sheets) to see each person's parts across the years and what each
+  part cost: lots, pieces and spend per person and year; one person's parts
+  by year; the price paid per piece each year with the quantity bought at
+  it; and one row per part with the average of its yearly prices (each year
+  counts once). Every table downloads as CSV. The year comes from the file
+  or sheet name, or is typed in; people are matched by name (capitals and
+  spacing ignored) with manual merges for other spellings, and parts by
+  element ID. The price is the sheet's `Price` / `Cost Each` column (not
+  `BL Price` or `B&P Price`); rows without an element ID, like fees and
+  shipping, don't count. All in the browser, nothing stored.
 - **Check sheet** — label count and any data issues (non-numeric
   quantities, duplicates, bad element IDs, colors with no LEGO/BrickLink
   match, missing descriptions) without generating anything.
@@ -372,6 +383,7 @@ or with the compose file: `LUGBULK_TAG=canary docker compose pull && docker comp
 | `src/spreadsheet.{h,cpp}` | Reads `.xlsx` (bounded unzip + SpreadsheetML) and `.csv` — no longer used by a route; kept as the reference `static/js/spreadsheet.js` is tested against |
 | `src/records.{h,cpp}` | Row cap, per-run size limits, BrickLink data on records, the "Check sheet" JSON |
 | `static/js/` | Browser ports of the pure data logic (plain ES modules, served at `/static/js/<name>.js`): `pivot.js`, `ordering.js`, `colors.js`, `layout.js`, `records.js`, `spreadsheet.js`, `load.js`, and the reports (`reports.js`, `report_options.js`, `printf.js`) and zip writer (`zip.js`) |
+| `static/js/years.js`, `years_page.js` | "Compare years": several sheets combined (people by name plus merges, parts by element ID, prices from the sheet's price column) and its tables and CSVs; the dashboard section that shows them; `tests/js/years.test.mjs` |
 | `static/js/vendor/` | Third-party browser modules, pinned and unmodified: `pdf-lib.js` (see its README) |
 | `tests/tests.cpp` | Unit tests (`ctest`) |
 | `tests/golden.cpp` | `lugbulk_golden <dir>`: writes what the C++ makes of each fixture, for the JS parity test |
