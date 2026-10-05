@@ -4,6 +4,7 @@
 // input's parent should be position: relative (the .combo class).
 //
 //   const c = combo(input, { items: () => names, onPick: (name) => ... });
+// A name typed out in full counts as picked when the box loses focus.
 //   c.value          the picked name ('' if none)
 //   c.set(name)      show a name as picked, without calling onPick
 //   c.refresh()      re-read items() (e.g. after the names changed)
@@ -104,10 +105,18 @@ export function combo(input, { items, onPick = () => {}, clearOnPick = false }) 
     if (document.activeElement === input && list.hidden) startSearch();
   });
   input.addEventListener('input', () => open(input.value.trim()));
+  // Leaving the box with a name typed out in full (any capitals) picks it,
+  // as if it had been chosen from the list.
   input.addEventListener('blur', () => {
+    const typed = input.value.trim().replace(/\s+/g, ' ').toLowerCase();
+    const match = typed ? items().find((n) => n.trim().replace(/\s+/g, ' ').toLowerCase() === typed) : undefined;
     close();
-    input.value = value;
     input.placeholder = hint;
+    if (match !== undefined && match !== value) {
+      pick(match);
+      return;
+    }
+    input.value = value;
   });
   input.addEventListener('keydown', (e) => {
     if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {

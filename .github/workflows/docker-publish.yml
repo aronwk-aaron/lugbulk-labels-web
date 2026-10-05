@@ -222,7 +222,11 @@ jobs:
           curl -fsS -D js.headers -o pivot.js http://localhost:8080/static/js/pivot.js
           cat js.headers
           grep -qi '^content-type: text/javascript' js.headers
-          grep -qi '^cache-control: public, max-age=300' js.headers
+          grep -qi '^cache-control: public, no-cache' js.headers
+          # Revalidated by ETag: an unchanged module is a 304.
+          etag="$(grep -i '^etag:' js.headers | cut -d' ' -f2 | tr -d '\r')"
+          test -n "$etag"
+          test "$(curl -s -o /dev/null -w '%{http_code}' -H "If-None-Match: $etag" http://localhost:8080/static/js/pivot.js)" = 304
           grep -q 'export function pivotSheet' pivot.js
           # The sheet reader and loader the dashboard imports.
           curl -fsS -o spreadsheet.js http://localhost:8080/static/js/spreadsheet.js
@@ -236,7 +240,7 @@ jobs:
             curl -fsS -D mod.headers -o mod.js "http://localhost:8080/static/js/$f"
             echo "/static/js/$f -> $(wc -c < mod.js) bytes"
             grep -qi '^content-type: text/javascript' mod.headers
-            grep -qi '^cache-control: public, max-age=300' mod.headers
+            grep -qi '^cache-control: public, no-cache' mod.headers
           done
           curl -fsS -o reports.js http://localhost:8080/static/js/reports.js
           grep -q 'export async function checklistPdf' reports.js
@@ -263,7 +267,7 @@ jobs:
             curl -fsS -D mod.headers -o mod.js "http://localhost:8080/static/js/$f"
             echo "/static/js/$f -> $(wc -c < mod.js) bytes"
             grep -qi '^content-type: text/javascript' mod.headers
-            grep -qi '^cache-control: public, max-age=300' mod.headers
+            grep -qi '^cache-control: public, no-cache' mod.headers
             # A worker runs under its own script's CSP: this app's scripts only.
             grep -qi "^content-security-policy: default-src 'none'; script-src 'self'" mod.headers
           done

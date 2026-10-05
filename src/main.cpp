@@ -1087,17 +1087,32 @@ int main() {
     });
 
     // Browser-side modules: GET /static/js/<name>.js (see load_static_js).
-    // The same for everyone; a short cache so a new release is picked up soon.
+    // The same for everyone; revalidated on every load (ETag, below).
     // Third-party modules they import (pdf-lib) live one level down, in
     // static/js/vendor/ (see the README there), served the same way: a
     // fixed second route, not a path parameter, so the name rules are the
     // same and nothing else can be reached.
     const std::map<std::string, std::string> static_js = load_static_js("static/js");
     const std::map<std::string, std::string> vendor_js = load_static_js("static/js/vendor");
-    auto serve_js = [](const std::map<std::string, std::string>& files, const std::string& name) {
+    // Each file's ETag (a hash of its bytes). The modules are revalidated on
+    // every load (no-cache) and answered 304 when unchanged: a cached copy
+    // kept for minutes after a release could mix old and new modules (the
+    // page's own script is never cached), and silently drop new features.
+    auto etags_of = [](const std::map<std::string, std::string>& files) {
+        std::map<std::string, std::string> etags;
+        for (const auto& [name, body] : files) etags[name] = "\"" + crypto::sha256_hex(body).substr(0, 32) + "\"";
+        return etags;
+    };
+    const auto static_etags = etags_of(static_js);
+    const auto vendor_etags = etags_of(vendor_js);
+    auto serve_js = [](const crow::request& req, const std::map<std::string, std::string>& files,
+                       const std::map<std::string, std::string>& etags, const std::string& name) {
         auto it = is_static_js_name(name) ? files.find(name) : files.end();
         if (it == files.end()) return crow::response(404, "not found");
+        const std::string& etag = etags.at(name);
         crow::response res(200, it->second);
+        if (req.get_header_value("If-None-Match") == etag) res = crow::response(304);
+        res.set_header("ETag", etag);
         res.set_header("Content-Type", "text/javascript; charset=utf-8");
         // A worker runs under the CSP of its own script's response, not the
         // page's (and the default csp_for("") allows no scripts, which would
@@ -1109,15 +1124,17 @@ int main() {
                        "default-src 'none'; script-src 'self'; base-uri 'none'; "
                        "frame-ancestors 'none'");
         // Kept by SecurityMiddleware (it only forces no-store on non-public responses).
-        res.set_header("Cache-Control", "public, max-age=300");
+        res.set_header("Cache-Control", "public, no-cache");
         return res;
     };
-    CROW_ROUTE(app, "/static/js/<string>")([&static_js, serve_js](const std::string& name) {
-        return serve_js(static_js, name);
-    });
-    CROW_ROUTE(app, "/static/js/vendor/<string>")([&vendor_js, serve_js](const std::string& name) {
-        return serve_js(vendor_js, name);
-    });
+    CROW_ROUTE(app, "/static/js/<string>")(
+        [&static_js, &static_etags, serve_js](const crow::request& req, const std::string& name) {
+            return serve_js(req, static_js, static_etags, name);
+        });
+    CROW_ROUTE(app, "/static/js/vendor/<string>")(
+        [&vendor_js, &vendor_etags, serve_js](const crow::request& req, const std::string& name) {
+            return serve_js(req, vendor_js, vendor_etags, name);
+        });
 
     // The sheet's label design (shared by everyone who has the sheet saved).
     CROW_ROUTE(app, "/sheets/<int>/design")([&db](const crow::request& req, int64_t row_id) {
