@@ -49,3 +49,23 @@ sha256sum static/js/vendor/pdf-lib.js
 - **SHA-256:** `0cc3d38d2c3b2f083bec80e61d27270ea11328ecc9130b0c4cb829aa70f6d8d4`
 - **License:** MIT, copyright (c) Project Nayuki — the notice is kept at the
   top of the file.
+
+## datatables.js
+
+- **What:** [DataTables](https://datatables.net/) — sorts and filters the
+  Compare years tables in the browser (`static/js/years_page.js`). Version 3
+  needs no jQuery.
+- **Version:** 3.1.3
+- **Upstream file:** `js/dataTables.min.mjs` from the npm package
+  `datatables.net@3.1.3` (`https://registry.npmjs.org/datatables.net/-/datatables.net-3.1.3.tgz`,
+  integrity `sha512-B34/A+KAkKQnl6si+SgmB8grhDepfHDXEFyQxJanqY70dB4ab0pHTF1aHZvLKKruuUoL815/y3YeTSYUr/pAOw==`),
+  renamed to `datatables.js`. Its stylesheet isn't used: the dashboard
+  styles the few classes it needs (sort arrows) in its own `<style>`.
+- **SHA-256:** `46db53b49b215c6c12a1997718ab40a0c2a31af2256a18cdb24d27ad43250989`
+- **Size:** 137,402 bytes (about 44 KB gzipped).
+- **License:** MIT, copyright SpryMedia Limited and other contributors —
+  see `datatables.LICENSE.txt`.
+
+```sh
+sha256sum static/js/vendor/datatables.js
+```

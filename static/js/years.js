@@ -11,10 +11,11 @@
 // by name (case and spacing ignored), plus the merges the user makes; parts
 // by element ID.
 
+import { groupOf, personKey } from './groups.js';
 import { parseQty, pivotSheet, unitPrices } from './pivot.js';
 import { capRows } from './records.js';
 import { csvField, formatCount, personSortKey } from './reports.js';
-import { asciiLower, compareBytes, trim } from './text.js';
+import { compareBytes, trim } from './text.js';
 
 // The first plausible year (1990-2099) in a file or sheet name, else null.
 export function yearFromName(name) {
@@ -56,9 +57,7 @@ export function readYear(tabs, name) {
 // ---- people ----------------------------------------------------------------
 
 // The key people are matched by: lower case, spacing collapsed.
-export function personKey(name) {
-  return asciiLower(trim(String(name)).replace(/\s+/g, ' '));
-}
+export { personKey };
 
 // Follows merges ({key: key it was merged into}) to the end of the chain.
 export function mergedKey(key, merges = {}) {
@@ -84,7 +83,11 @@ const comparePeople = (a, b) => {
 // person a name was merged into (theirs, not the merged-in name's). Years without a year number
 // are left out; two sheets for the same year are an error for the caller to
 // show (duplicateYears) before this is used.
-export function combine(sheets, merges = {}) {
+//
+// With `groups` (groups.js) whose `combine` is on, each group shows as one
+// person: its members' parts added up, under the group's name. Members are
+// matched after merges.
+export function combine(sheets, merges = {}, groups = null) {
   const usable = sheets.filter((s) => s.year !== null).sort((a, b) => a.year - b.year);
   const spelling = new Map(); // key -> latest spelling, its own over merged-in ones
   const spellings = new Map(); // key -> Set of spellings
@@ -112,10 +115,41 @@ export function combine(sheets, merges = {}) {
       });
     }
   }
-  const people = [...spelling.entries()]
-    .map(([key, name]) => ({ key, name, spellings: [...spellings.get(key)].sort(compareBytes) }))
-    .sort((a, b) => comparePeople(a.name, b.name));
-  return { years: [...new Set(usable.map((s) => s.year))], people, entries };
+  let people = [...spelling.entries()]
+    .map(([key, name]) => ({ key, name, spellings: [...spellings.get(key)].sort(compareBytes) }));
+  const years = [...new Set(usable.map((s) => s.year))];
+  const of = groupOf(groups, (m) => mergedKey(personKey(m), merges));
+  if (!of.size) return { years, people: people.sort((a, b) => comparePeople(a.name, b.name)), entries };
+
+  // Groups: one person each, their members' entries added up.
+  const groupFor = new Map(); // display name -> group name
+  const members = new Map(); // group name -> member display names
+  for (const p of people) {
+    const g = of.get(p.key);
+    if (g === undefined) continue;
+    groupFor.set(p.name, g);
+    if (!members.has(g)) members.set(g, []);
+    members.get(g).push(p.name);
+  }
+  const merged = new Map(); // JSON [year, person, element_id] -> entry
+  const grouped = [];
+  for (const e of entries) {
+    const person = groupFor.get(e.person) ?? e.person;
+    const k = JSON.stringify([e.year, person, e.element_id]);
+    const at = merged.get(k);
+    if (at) {
+      at.qty += e.qty;
+    } else {
+      const g = { ...e, person };
+      merged.set(k, g);
+      grouped.push(g);
+    }
+  }
+  people = people.filter((p) => !groupFor.has(p.name));
+  for (const [name, names] of members) {
+    people.push({ key: personKey(name), name, spellings: names.sort(compareBytes), group: true });
+  }
+  return { years, people: people.sort((a, b) => comparePeople(a.name, b.name)), entries: grouped };
 }
 
 // Years that more than one sheet claims.

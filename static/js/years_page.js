@@ -3,13 +3,18 @@
 // then show the tables from years.js. Everything is worked out here in the
 // browser; uploads are never sent anywhere.
 
+import { combo } from './combo.js';
+import { normalizeGroups } from './groups.js';
+import { groupEditor } from './groups_ui.js';
 import { SOURCE_TAB } from './layout.js';
 import { SpreadsheetError, readTabs } from './spreadsheet.js';
 import { formatCount } from './reports.js';
+import DataTable from './vendor/datatables.js';
 import * as years from './years.js';
 
 const MAX_UPLOAD_BYTES = 10 * 1024 * 1024;
 const MERGES_KEY = 'lugbulk.yearsMerges';
+const GROUPS_KEY = 'lugbulk.yearsGroups';
 
 const $ = (id) => document.getElementById(id);
 
@@ -42,6 +47,10 @@ function loadMerges() {
 function saveMerges(merges) {
   try { localStorage.setItem(MERGES_KEY, JSON.stringify(merges)); } catch (e) {}
 }
+function loadGroups() {
+  try { return normalizeGroups(JSON.parse(localStorage.getItem(GROUPS_KEY) || 'null')); } catch (e) {}
+  return normalizeGroups(null);
+}
 
 // api: the dashboard's fetch wrapper (handles sign-in). saveBlob(blob, name):
 // its download helper.
@@ -49,7 +58,10 @@ export function initYears({ api, saveBlob }) {
   const sheets = []; // years.readYear results, plus {id}
   let nextId = 1;
   let merges = loadMerges();
-  let data = null;
+  let groups = loadGroups();
+  let people = null; // combine() without groups: everyone, for names and groups
+  let data = null; // combine() with groups: what the tables show
+  const orders = {}; // each table's sort, kept while it is redrawn
   let view = 'people';
   let person = '';
   let readErrors = ''; // from the last sheets added
@@ -161,31 +173,30 @@ export function initYears({ api, saveBlob }) {
 
   // ---- names ----
 
+  const names = () => (people ? people.people.map((p) => p.name) : []);
+  const mergeFrom = combo($('years-merge-from'), { items: names });
+  const mergeInto = combo($('years-merge-into'), { items: () => names().filter((n) => n !== mergeFrom.value) });
+
   function renderNames() {
-    const names = data.people.map((p) => p.name);
+    const all = names();
     const merged = Object.keys(merges).length;
     $('years-names-summary').textContent =
-      `Names: ${names.length} people` + (merged ? `, ${merged} merged` : '');
+      `Names: ${all.length} people` + (merged ? `, ${merged} merged` : '');
 
     const suggest = $('years-suggest');
     suggest.textContent = '';
-    for (const [a, b] of years.nameSuggestions(data.people)) {
+    for (const [a, b] of years.nameSuggestions(people.people)) {
       const btn = el('button', { type: 'button', text: `Merge “${a}” into “${b}”` });
       btn.addEventListener('click', () => merge(a, b));
       suggest.appendChild(el('div', { class: 'row' }, ['Same person? ', btn]));
     }
 
-    for (const id of ['years-merge-from', 'years-merge-into']) {
-      const select = $(id);
-      const was = select.value;
-      select.textContent = '';
-      for (const n of names) select.appendChild(el('option', { value: n, text: n }));
-      if (names.includes(was)) select.value = was;
-    }
+    mergeFrom.refresh();
+    mergeInto.refresh();
 
     const list = $('years-merges');
     list.textContent = '';
-    for (const p of data.people) {
+    for (const p of people.people) {
       // Only real merges: spellings that differ in more than capitals and spacing.
       const byKey = new Map(p.spellings.map((s) => [years.personKey(s), s]));
       if (byKey.size < 2) continue;
@@ -207,19 +218,41 @@ export function initYears({ api, saveBlob }) {
     saveMerges(merges);
     refresh();
   }
-  $('years-merge-btn').addEventListener('click', () => merge($('years-merge-from').value, $('years-merge-into').value));
+  $('years-merge-btn').addEventListener('click', () => {
+    if (mergeFrom.value && mergeInto.value) merge(mergeFrom.value, mergeInto.value);
+  });
+
+  // ---- groups ----
+
+  const groupsUi = groupEditor($('years-groups-editor'), {
+    people: names,
+    get: () => groups,
+    set: (g) => {
+      groups = g;
+      try { localStorage.setItem(GROUPS_KEY, JSON.stringify(g)); } catch (e) {}
+      $('years-groups-summary').textContent = groupsSummary();
+      if (people) {
+        data = years.combine(sheets, merges, groups);
+        renderView();
+      }
+    },
+    combineLabel: 'Show each group as one person in the tables',
+  });
+  const groupsSummary = () => `Couples and families: ${groups.list.length} group${groups.list.length === 1 ? '' : 's'}` +
+    (groups.list.length && !groups.combine ? ' (shown as separate people)' : '');
 
   // ---- the tables ----
 
   const money = years.formatMoney;
   const th = (text, num) => el('th', { class: num ? 'num' : '', text });
   const td = (text, cls) => el('td', { class: cls || '', text: text ?? '' });
+  // A number cell: shown as `text`, sorted by `value` (blank sorts lowest).
+  const num = (text, value) => {
+    const c = el('td', { class: 'num', text: text ?? '' });
+    c.dataset.order = value === null || value === undefined || Number.isNaN(value) ? '-1' : String(value);
+    return c;
+  };
   const partCells = (r) => [td(r.element_id), td(r.description, 'wrap'), td(r.color)];
-
-  function matches(r, filter) {
-    if (!filter) return true;
-    return [r.element_id, r.description, r.color, r.person].some((v) => v && v.toLowerCase().includes(filter));
-  }
 
   function table(head, rows, foot) {
     const t = el('table', { class: 'data' }, [el('thead', {}, [el('tr', {}, head)]), el('tbody', {}, rows)]);
@@ -231,15 +264,19 @@ export function initYears({ api, saveBlob }) {
     people: {
       note: () => 'Lots (different parts), pieces and amount spent per person and year. Spent counts parts with a price only.',
       csv: () => [years.peopleCsv(data), 'people by year.csv'],
-      render(filter) {
+      render() {
         const ys = data.years;
-        const rows = years.peopleSummary(data).filter((t) => matches(t, filter)).map((t) => {
-          const cells = [el('td', {}, [personLink(t.person)])];
+        const isGroup = new Set(data.people.filter((p) => p.group).map((p) => p.name));
+        const rows = years.peopleSummary(data).map((t) => {
+          const who = el('td', {}, [personLink(t.person)]);
+          if (isGroup.has(t.person)) who.appendChild(el('span', { class: 'muted', text: ' (group)' }));
+          const cells = [who];
           for (const y of ys) {
             const v = t.years[y];
-            cells.push(td(v ? `${v.lots} / ${formatCount(v.pieces)}` : '', 'num'), td(v ? money(v.spent) : '', 'num'));
+            cells.push(num(v ? `${v.lots} / ${formatCount(v.pieces)}` : '', v ? v.pieces : null),
+                       num(v ? money(v.spent) : '', v ? v.spent : null));
           }
-          cells.push(td(String(t.lots), 'num'), td(formatCount(t.pieces), 'num'), td(money(t.spent), 'num'));
+          cells.push(num(String(t.lots), t.lots), num(formatCount(t.pieces), t.pieces), num(money(t.spent), t.spent));
           return el('tr', {}, cells);
         });
         return table([th('Person'), ...ys.flatMap((y) => [th(`${y} lots / pieces`, true), th(`${y} spent`, true)]),
@@ -250,12 +287,12 @@ export function initYears({ api, saveBlob }) {
       note: () => (person ? `Every part ${person} got, by year. Click a name in “People” to jump here.` : ''),
       csv: () => [years.inventoryCsv({ ...data, entries: data.entries.filter((e) => e.person === person) }),
                   `${person} parts by year.csv`],
-      render(filter) {
+      render() {
         const ys = data.years;
-        const inv = years.personInventory(data, person).filter((r) => matches(r, filter));
+        const inv = years.personInventory(data, person);
         const rows = inv.map((r) => el('tr', {}, [...partCells(r),
-          ...ys.map((y) => td(r.qty[y] ? formatCount(r.qty[y]) : '', 'num')),
-          td(formatCount(r.total), 'num'), td(money(r.spent), 'num')]));
+          ...ys.map((y) => num(r.qty[y] ? formatCount(r.qty[y]) : '', r.qty[y] ?? null)),
+          num(formatCount(r.total), r.total), num(money(r.spent), r.spent)]));
         const sum = (f) => inv.reduce((s, r) => s + f(r), 0);
         const foot = [td(`${inv.length} part${inv.length === 1 ? '' : 's'}`), td(''), td(''),
           ...ys.map((y) => td(formatCount(sum((r) => r.qty[y] || 0)), 'num')),
@@ -267,10 +304,10 @@ export function initYears({ api, saveBlob }) {
     prices: {
       note: () => 'The price paid per piece each year, and how many were bought at it (everyone together).',
       csv: () => [years.pricesByYearCsv(data), 'prices by year.csv'],
-      render(filter) {
-        const rows = years.pricesByYear(data).filter((r) => matches(r, filter)).map((r) => el('tr', {}, [
-          ...partCells(r), td(String(r.year), 'num'), td(r.price === null ? '—' : money(r.price), 'num'),
-          td(formatCount(r.qty), 'num'), td(String(r.people), 'num')]));
+      render() {
+        const rows = years.pricesByYear(data).map((r) => el('tr', {}, [
+          ...partCells(r), num(String(r.year), r.year), num(r.price === null ? '—' : money(r.price), r.price),
+          num(formatCount(r.qty), r.qty), num(String(r.people), r.people)]));
         return table([th('Element ID'), th('Description'), th('Color'), th('Year', true), th('Price', true),
           th('Qty', true), th('People', true)], rows);
       },
@@ -278,12 +315,12 @@ export function initYears({ api, saveBlob }) {
     average: {
       note: () => 'One row per part. The average is of the yearly prices: each year counts once, however many were bought.',
       csv: () => [years.averagePricesCsv(data), 'average prices.csv'],
-      render(filter) {
+      render() {
         const ys = data.years;
-        const rows = years.averagePrices(data).filter((r) => matches(r, filter)).map((r) => el('tr', {}, [
-          ...partCells(r), ...ys.map((y) => td(money(r.prices[y]), 'num')),
-          td(r.average === null ? '—' : money(r.average), 'num'), td(money(r.low), 'num'), td(money(r.high), 'num'),
-          td(formatCount(r.qty), 'num')]));
+        const rows = years.averagePrices(data).map((r) => el('tr', {}, [
+          ...partCells(r), ...ys.map((y) => num(money(r.prices[y]), r.prices[y])),
+          num(r.average === null ? '—' : money(r.average), r.average), num(money(r.low), r.low),
+          num(money(r.high), r.high), num(formatCount(r.qty), r.qty)]));
         return table([th('Element ID'), th('Description'), th('Color'), ...ys.map((y) => th(String(y), true)),
           th('Average', true), th('Low', true), th('High', true), th('Qty', true)], rows);
       },
@@ -311,24 +348,44 @@ export function initYears({ api, saveBlob }) {
     t.addEventListener('click', () => showView(t.dataset.view));
   }
 
+  // The person picker: a searchable list of everyone (groups included).
+  const personPick = combo($('years-person'), {
+    items: () => (data ? data.people.map((p) => p.name) : []),
+    onPick: (name) => { person = name; renderView(); },
+  });
+
+  // The table is sorted and filtered here in the browser by DataTables;
+  // the filter box above it is its search.
+  let table_ = null;
   function renderView() {
-    const select = $('years-person');
-    select.hidden = view !== 'person';
+    $('years-person-field').hidden = view !== 'person';
     $('years-csv-all').hidden = view !== 'person';
     if (view === 'person') {
-      select.textContent = '';
-      for (const p of data.people) select.appendChild(el('option', { value: p.name, text: p.name }));
       if (!data.people.some((p) => p.name === person)) person = data.people[0]?.name ?? '';
-      select.value = person;
+      personPick.set(person);
     }
     const v = VIEWS[view];
     $('years-view-note').textContent = v.note();
     const wrap = $('years-table');
+    if (table_) table_.destroy();
     wrap.textContent = '';
-    wrap.appendChild(v.render($('years-filter').value.trim().toLowerCase()));
+    const t = v.render();
+    wrap.appendChild(t);
+    const shown = view;
+    table_ = new DataTable(t, {
+      paging: false,
+      info: false,
+      autoWidth: false,
+      layout: { topStart: null, topEnd: null, bottomStart: null, bottomEnd: null },
+      order: orders[shown] ?? [],
+      search: { search: $('years-filter').value.trim() },
+      language: { emptyTable: 'Nothing here.', zeroRecords: 'Nothing matches the filter.' },
+    });
+    table_.on('order', () => { orders[shown] = table_.order(); });
   }
-  $('years-person').addEventListener('change', (e) => { person = e.target.value; renderView(); });
-  $('years-filter').addEventListener('input', () => { if (data) renderView(); });
+  $('years-filter').addEventListener('input', () => {
+    if (table_) table_.search($('years-filter').value.trim()).draw();
+  });
   $('years-csv').addEventListener('click', () => {
     const [text, name] = VIEWS[view].csv();
     saveBlob(new Blob([text], { type: 'text/csv' }), name);
@@ -351,8 +408,11 @@ export function initYears({ api, saveBlob }) {
     const text = problems.filter(Boolean).join(' ');
     setStatus(text, !!text);
     if (!ready) return;
-    data = years.combine(sheets, merges);
+    people = years.combine(sheets, merges);
+    data = years.combine(sheets, merges, groups);
     renderNames();
+    groupsUi.render();
+    $('years-groups-summary').textContent = groupsSummary();
     showView(view);
   }
 
