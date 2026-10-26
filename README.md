@@ -1,22 +1,61 @@
-# lugbulk-labels-web
+<h1 align="center">LUGBulk Labels</h1>
 
-> **AI disclaimer:** This project was scaffolded with assistance from Claude
+<p align="center">
+  <b>Labels, packing checklists and reports for a LEGO User Group's LUGBulk order, straight from the order sheet.</b>
+</p>
+
+<p align="center">
+  <a href="https://lugbulk.aronwk.com"><b>Open the app → lugbulk.aronwk.com</b></a>
+</p>
+
+<p align="center">
+  <a href="https://github.com/aronwk-aaron/lugbulk-labels-web/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/aronwk-aaron/lugbulk-labels-web?sort=semver"></a>
+  <a href="https://github.com/aronwk-aaron/lugbulk-labels-web/actions/workflows/docker-publish.yml"><img alt="Build" src="https://github.com/aronwk-aaron/lugbulk-labels-web/actions/workflows/docker-publish.yml/badge.svg"></a>
+  <a href="LICENSE"><img alt="License: AGPL-3.0" src="https://img.shields.io/badge/license-AGPL--3.0-blue"></a>
+  <a href="https://github.com/aronwk-aaron/lugbulk-labels-web/pkgs/container/lugbulk-labels-web"><img alt="Container image on GHCR" src="https://img.shields.io/badge/ghcr.io-lugbulk--labels--web-2496ED?logo=docker&logoColor=white"></a>
+</p>
+
+![The label designer with a live preview of an invented two-person order](docs/screenshot.png)
+
+Every year a LUG's organizers sort a big LUGBulk delivery into one bag per
+member. This app turns the group's order sheet into everything needed for
+that: a printable label for every bag (part photo, element ID, colors,
+quantity, whose it is, "3 of 10"), a per-person packing checklist, a parts
+list and lot counts.
+
+- **No install, no account needed** — upload the sheet as `.xlsx` or
+  `.csv`; it's read in your browser and never leaves it.
+- **Or sign in with Google** to save your order sheet and read it live each
+  time, with one label design shared by everyone who has the sheet.
+- **51 label stocks** — Avery (US Letter and A4) and Dymo LabelWriter, with
+  a live preview and an alignment test page.
+- **Compare years** — what each person got and what parts cost across
+  several years' sheets.
+
+It's the web counterpart of
+[lugbulk-labels-cli](https://github.com/aronwk-aaron/lugbulk-labels-cli),
+the command-line version.
+
+> **AI disclaimer:** This project was built with assistance from Claude
 > (Anthropic). Review the code before relying on it, especially the OAuth
 > flow, token storage, and the in-browser PDF generation logic.
 
-Hosted, multi-user counterpart to
-[lugbulk-label](https://github.com/aronwk-aaron/lugbulk-label) (the local
-Python CLI). Lets a handful of trusted LUG organizers log in with their own
-Google account, point at their own bulk-order sheet, and generate label
-PDFs / lot-count reports without installing Python or a service account key
-locally.
+## Contents
 
-**Status: working, pre-release.** Google OAuth login (encrypted refresh
-token storage, hashed session tokens), a Google Picker sheet chooser,
-generation (in the browser) of label PDFs, a parts list and lot counts from
-the live sheet, and a per-sheet "last download" history are implemented.
+- [Using it](#using-it)
+- [Features](#features)
+- [Self-hosting](#self-hosting)
+- [Development](#development)
+- [Releases](#releases)
+- [How it works](#how-it-works)
+- [Security and abuse limits](#security-and-abuse-limits)
+- [Project files](#project-files)
+- [License](#license)
 
-## Two ways in
+## Using it
+
+Go to **[lugbulk.aronwk.com](https://lugbulk.aronwk.com)**, or
+[run your own copy](#self-hosting). There are two ways in:
 
 - **Upload a spreadsheet** — no account needed. Upload the order sheet as
   an Excel `.xlsx` (Google Sheets: File → Download → Microsoft Excel) or a
@@ -27,15 +66,7 @@ the live sheet, and a per-sheet "last download" history are implemented.
   — save your Google Sheets and read them live each time, with label
   designs saved per sheet and shared with everyone who has that sheet.
 
-Without `GOOGLE_OAUTH_CLIENT_ID`/`_SECRET` the app runs upload-only (no
-`TOKEN_ENCRYPTION_KEY` needed then). Set `PUBLIC_URL` to the app's public
-address (e.g. `https://lugbulk.example.org`); it defaults to the origin of
-`GOOGLE_OAUTH_REDIRECT_URI` when Google is on. Adding a Google Sheet also
-needs `GOOGLE_API_KEY` and `GOOGLE_APP_ID` for the Google Picker (see
-[Google OAuth setup](#google-oauth-setup)); without them, signed-in users
-can still open sheets already in their list.
-
-## What it generates
+## Features
 
 - **Labels** — one per (person, part), grouped by part: heaviest parts
   first (or lightest / sheet order), smallest quantity first within a
@@ -137,6 +168,69 @@ estimate from the description's stud dimensions (`PLATE 4X8`,
 `LEGO Color`/`BL Color` columns is blank is filled from the color table in
 `src/colors.cpp`, or failing that from BrickLink.
 
+## Self-hosting
+
+The app is a single Docker container. Run the published image:
+
+```
+docker run -d --name lugbulk -p 8080:8080 -v lugbulk-data:/data --env-file .env \
+    ghcr.io/aronwk-aaron/lugbulk-labels-web:latest    # or :canary, or :1.2.0
+```
+
+or with the compose file: `LUGBULK_TAG=canary docker compose pull && docker compose up -d`.
+
+`/data` holds the SQLite database, the part-photo cache and the optional
+BrickLink catalog. The app serves plain HTTP on port 8080; put it behind a
+reverse proxy for TLS.
+
+### Configuration
+
+Copy [`.env.example`](.env.example) to `.env`; every setting is explained
+there.
+
+Without `GOOGLE_OAUTH_CLIENT_ID`/`_SECRET` the app runs upload-only (no
+`TOKEN_ENCRYPTION_KEY` needed then). Set `PUBLIC_URL` to the app's public
+address (e.g. `https://lugbulk.example.org`); it defaults to the origin of
+`GOOGLE_OAUTH_REDIRECT_URI` when Google is on. Adding a Google Sheet also
+needs `GOOGLE_API_KEY` and `GOOGLE_APP_ID` for the Google Picker (see
+[Google OAuth setup](#google-oauth-setup)); without them, signed-in users
+can still open sheets already in their list.
+
+With Google sign-in on, set `ALLOWED_EMAILS` to your organizers' addresses
+(or `@domain`s), and `TRUST_PROXY=1` behind a reverse proxy — see
+[Security and abuse limits](#security-and-abuse-limits).
+
+### Google OAuth setup
+
+1. [console.cloud.google.com](https://console.cloud.google.com) → a
+   project with the **Google Sheets API** and the **Google Picker API**
+   enabled (APIs & Services → Library).
+2. **APIs & Services → OAuth consent screen** (Google Auth Platform) —
+   scopes: `openid`, `.../auth/userinfo.email` and `.../auth/drive.file`
+   only. `drive.file` is non-sensitive, so the app can be published
+   (Audience → **Publish app**) without restricted-scope verification.
+3. **APIs & Services → Credentials → Create Credentials → OAuth client
+   ID** — type "Web application". Add an authorized redirect URI matching
+   `GOOGLE_OAUTH_REDIRECT_URI` (e.g. `http://localhost:8080/auth/callback`
+   for local dev; your real domain's callback URL in production).
+4. Copy the client ID and secret into `.env`.
+5. **Credentials → Create Credentials → API key** for the Picker. Restrict
+   it: Application restrictions → **Websites**, the app's origin (e.g.
+   `https://lugbulk.example.org/*`); API restrictions → **Google Picker
+   API** only. Put it in `GOOGLE_API_KEY`. It is sent to signed-in users'
+   browsers, which is how Picker keys work — the restrictions are what
+   protect it.
+6. `GOOGLE_APP_ID` is the project **number** (not the project id): Cloud
+   Console → the project's **Dashboard** / **IAM & Admin → Settings**.
+
+**"Google hasn't verified this app" screen:** it shows while the consent
+screen is in **Testing** (only listed test users can sign in; click
+**Advanced** → **"Go to lugbulk-labels-web (unsafe)"**). Since the app only
+asks for `openid`, `email` and `drive.file` — none of them sensitive or
+restricted — publishing it (Audience → **Publish app**) makes sign-in open
+to any Google account without the security assessment that restricted
+Drive scopes need. Use `ALLOWED_EMAILS` to keep it to your organizers.
+
 ### BrickLink (optional)
 
 Real part weights (for part order) and BrickLink color names (for colors a
@@ -148,12 +242,89 @@ as **Tab-Delimited File**:
 1. **Catalog Items → Parts**, with **Include Weight** ticked;
 2. **Part and Color Codes**.
 
-Put both in `<data dir>/bricklink/` (e.g.
+Put both in `<data dir>/bricklink/` (`/data/bricklink/` in the container) (e.g.
 `/mnt/user/appdata/lugbulk-labels-web/bricklink/`). Any file names work —
 they're recognised by their header row — and replacing them is picked up
 automatically on the next report. Without them, weights are estimated.
 
-## Stack
+## Development
+
+```
+cp .env.example .env   # fill in Google OAuth client id/secret (see below)
+docker compose up --build
+```
+
+Serves on `http://localhost:8080`. `/healthz` returns `200 ok` once the
+container is up.
+
+### Building without Docker
+
+```
+cmake -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build -j"$(nproc)"
+./build/lugbulk_labels_web
+```
+
+Requires: a C++20 compiler, CMake ≥ 3.20, and dev packages for OpenSSL,
+SQLite3, libcurl, zlib and standalone Asio (`libssl-dev libsqlite3-dev
+libcurl4-openssl-dev zlib1g-dev libasio-dev` on Debian/Ubuntu).
+
+Unit tests (sheet pivoting, colors, ordering, the photo cache, design
+storage, rate limits...) build alongside the server and run in the Docker
+build:
+
+```
+ctest --test-dir build --output-on-failure
+```
+
+The browser code has its own tests (Node 22+, no install):
+
+```
+node --test tests/js/                       # unit tests + the checked-in fixtures
+./build/lugbulk_golden golden && GOLDEN_DIR=golden node --test tests/js/   # + parity with the C++
+```
+
+`tests/js/golden/` holds fixtures dumped once from the C++ before its PDF,
+CSV and label-layout code was retired (`labels.json`, `reports.json`); the
+JavaScript is their reference now. `tests/js/golden/regenerate-labels.mjs`
+rewrites the label layouts from it after an intended change to the layout
+or the font widths (`static/js/afm.js`).
+
+## Releases
+
+`.github/workflows/docker-publish.yml` builds, tests and publishes the
+image to GitHub Container Registry with the repo's built-in
+`GITHUB_TOKEN` (no registry secrets):
+
+| Event | Image tags | GitHub release |
+|---|---|---|
+| Pull request | — (build + tests + smoke test only) | — |
+| Push to `master` | `canary`, short SHA | Rolling **canary** pre-release, always the head of `master`, with the changes since the last release |
+| Push a `vX.Y.Z` tag | `X.Y.Z`, `X.Y`, `X`, `latest` | Release `vX.Y.Z` with generated notes |
+| Push a `vX.Y.Z-rc.N` tag | `X.Y.Z-rc.N` | Pre-release |
+
+`latest` only ever moves on a release. Every release attaches
+`docker-compose.yml` and `env.example` (save it as `.env`). The running build's version is
+shown in the dashboard header and at `/version` (`1.2.0`,
+`canary-<sha>`, or `dev` for local builds).
+
+To cut a release:
+
+```
+git tag v1.2.0 && git push origin v1.2.0
+```
+
+Before anything is pushed, CI runs the unit tests (inside the image
+build), boots the image, and checks `/healthz`, `/version`, the login
+redirect, and that it runs as the unprivileged `lugbulk` user.
+
+The container starts as root only long enough to hand `/data` to
+`lugbulk` (so volumes from older, root-run images keep working), then drops
+privileges. It has a Docker `HEALTHCHECK` on `/healthz`.
+
+## How it works
+
+### Stack
 
 - **[CrowCpp](https://github.com/CrowCpp/Crow)** — C++ web framework, fetched via CMake `FetchContent` (header-only, not vendored in-repo)
 - **SQLite** — users, saved sheets, and a run history log. No generated files are persisted; every download re-runs against the live sheet.
@@ -161,7 +332,7 @@ automatically on the next report. Without them, weights are estimated.
 - **libcurl + OpenSSL** — outbound HTTPS for the Google OAuth token exchange and Sheets API calls.
 - **Docker** — deploy target is a single container on the maintainer's server, with `/data` as a mounted volume (SQLite DB + image cache).
 
-## Design
+### Design
 
 Each user authenticates via Google OAuth and authorizes read access to
 their own sheets — there is no shared service account like the CLI uses.
@@ -222,7 +393,7 @@ limits what any one person — or script — can make it do:
 | Who can sign in | `ALLOWED_EMAILS` (addresses and/or `@domain`s); verified Google email required. Removing someone locks them out immediately. **Set this** — unset lets any Google account in and logs a warning at startup. |
 | Reading a saved sheet | 6 at once, then one per 2 minutes, per user; one running per user; `MAX_CONCURRENT_JOBS` (default 2) server-wide. Over the limit gets an immediate "try again" (HTTP 429), never a queue. |
 | Uploads | Never reach the server: the file is read in the browser |
-| Drive search | 10 at once, then one per 3 seconds, per user |
+| Google Picker tokens / adding sheets | 10 at once, then one per 3 seconds, per user |
 | Any request | 120 at once, then 10/second, per client IP (sign-in routes: 10, then one per 6 seconds) |
 | Request body | 64 KB (Crow patched at build time — `cmake/patch_crow.cmake`); bigger requests are dropped |
 | Sheet size | 3,000 rows read; 20,000 labels / 2,000 parts per run; 32 MB Google response |
@@ -262,121 +433,6 @@ are HttpOnly, SameSite=Lax (Secure over https) and stored hashed; refresh
 tokens are AES-256-GCM encrypted at rest. Third-party code is pinned by
 commit (GitHub Actions, Crow, the QR library) and kept current by
 Dependabot.
-
-## Local development
-
-```
-cp .env.example .env   # fill in Google OAuth client id/secret (see below)
-docker compose up --build
-```
-
-Serves on `http://localhost:8080`. `/healthz` returns `200 ok` once the
-container is up.
-
-### Google OAuth setup
-
-1. [console.cloud.google.com](https://console.cloud.google.com) → a
-   project with the **Google Sheets API** and the **Google Picker API**
-   enabled (APIs & Services → Library).
-2. **APIs & Services → OAuth consent screen** (Google Auth Platform) —
-   scopes: `openid`, `.../auth/userinfo.email` and `.../auth/drive.file`
-   only. `drive.file` is non-sensitive, so the app can be published
-   (Audience → **Publish app**) without restricted-scope verification.
-3. **APIs & Services → Credentials → Create Credentials → OAuth client
-   ID** — type "Web application". Add an authorized redirect URI matching
-   `GOOGLE_OAUTH_REDIRECT_URI` (e.g. `http://localhost:8080/auth/callback`
-   for local dev; your real domain's callback URL in production).
-4. Copy the client ID and secret into `.env`.
-5. **Credentials → Create Credentials → API key** for the Picker. Restrict
-   it: Application restrictions → **Websites**, the app's origin (e.g.
-   `https://lugbulk.example.org/*`); API restrictions → **Google Picker
-   API** only. Put it in `GOOGLE_API_KEY`. It is sent to signed-in users'
-   browsers, which is how Picker keys work — the restrictions are what
-   protect it.
-6. `GOOGLE_APP_ID` is the project **number** (not the project id): Cloud
-   Console → the project's **Dashboard** / **IAM & Admin → Settings**.
-
-**"Google hasn't verified this app" screen:** it shows while the consent
-screen is in **Testing** (only listed test users can sign in; click
-**Advanced** → **"Go to lugbulk-labels-web (unsafe)"**). Since the app only
-asks for `openid`, `email` and `drive.file` — none of them sensitive or
-restricted — publishing it (Audience → **Publish app**) makes sign-in open
-to any Google account without the security assessment that restricted
-Drive scopes need. Use `ALLOWED_EMAILS` to keep it to your organizers.
-
-## Building without Docker
-
-```
-cmake -B build -DCMAKE_BUILD_TYPE=Release
-cmake --build build -j"$(nproc)"
-./build/lugbulk_labels_web
-```
-
-Requires: a C++20 compiler, CMake ≥ 3.20, and dev packages for OpenSSL,
-SQLite3, libcurl, zlib and standalone Asio (`libssl-dev libsqlite3-dev
-libcurl4-openssl-dev zlib1g-dev libasio-dev` on Debian/Ubuntu).
-
-Unit tests (sheet pivoting, colors, ordering, the photo cache, design
-storage, rate limits...) build alongside the server and run in the Docker
-build:
-
-```
-ctest --test-dir build --output-on-failure
-```
-
-The browser code has its own tests (Node 22+, no install):
-
-```
-node --test tests/js/                       # unit tests + the checked-in fixtures
-./build/lugbulk_golden golden && GOLDEN_DIR=golden node --test tests/js/   # + parity with the C++
-```
-
-`tests/js/golden/` holds fixtures dumped once from the C++ before its PDF,
-CSV and label-layout code was retired (`labels.json`, `reports.json`); the
-JavaScript is their reference now. `tests/js/golden/regenerate-labels.mjs`
-rewrites the label layouts from it after an intended change to the layout
-or the font widths (`static/js/afm.js`).
-
-## Container image and releases
-
-`.github/workflows/docker-publish.yml` builds, tests and publishes the
-image to GitHub Container Registry with the repo's built-in
-`GITHUB_TOKEN` (no registry secrets):
-
-| Event | Image tags | GitHub release |
-|---|---|---|
-| Pull request | — (build + tests + smoke test only) | — |
-| Push to `master` | `canary`, short SHA | Rolling **canary** pre-release, always the head of `master`, with the changes since the last release |
-| Push a `vX.Y.Z` tag | `X.Y.Z`, `X.Y`, `X`, `latest` | Release `vX.Y.Z` with generated notes |
-| Push a `vX.Y.Z-rc.N` tag | `X.Y.Z-rc.N` | Pre-release |
-
-`latest` only ever moves on a release. Every release attaches
-`docker-compose.yml` and `env.example` (save it as `.env`). The running build's version is
-shown in the dashboard header and at `/version` (`1.2.0`,
-`canary-<sha>`, or `dev` for local builds).
-
-To cut a release:
-
-```
-git tag v1.2.0 && git push origin v1.2.0
-```
-
-Before anything is pushed, CI runs the unit tests (inside the image
-build), boots the image, and checks `/healthz`, `/version`, the login
-redirect, and that it runs as the unprivileged `lugbulk` user.
-
-The container starts as root only long enough to hand `/data` to
-`lugbulk` (so volumes from older, root-run images keep working), then drops
-privileges. It has a Docker `HEALTHCHECK` on `/healthz`.
-
-To run a published image:
-
-```
-docker run -d --name lugbulk -p 8080:8080 -v lugbulk-data:/data --env-file .env \
-    ghcr.io/aronwk-aaron/lugbulk-labels-web:latest    # or :canary, or :1.2.0
-```
-
-or with the compose file: `LUGBULK_TAG=canary docker compose pull && docker compose up -d`.
 
 ## Project files
 
